@@ -1,0 +1,3443 @@
+%{
+enum { HL=0, BC=1, DE=2 };
+#include "c.h"
+#define NODEPTR_TYPE Node
+#define OP_LABEL(p) ((p)->op)
+#define LEFT_CHILD(p) ((p)->kids[0])
+#define RIGHT_CHILD(p) ((p)->kids[1])
+#define LEFT_X_CHILD(p) ((p)->x.kids[0])
+#define RIGHT_X_CHILD(p) ((p)->x.kids[1])
+#define STATE_LABEL(p) ((p)->x.state)
+static void address(Symbol, Symbol, int);
+static void blkfetch(int, int, int, int);
+static void blkloop(int, int, int, int, int, int[]);
+static void blkstore(int, int, int, int);
+static void defaddress(Symbol);
+static void defconst(int, int, Value);
+static void defstring(int, char *);
+static void defsymbol(Symbol);
+static void doarg(Node);
+static void emit2(Node);
+static void export(Symbol);
+static void clobber(Node);
+static void function(Symbol, Symbol [], Symbol [], int);
+static void global(Symbol);
+static void import(Symbol);
+static void local(Symbol);
+static void progbeg(int, char **);
+static void progend(void);
+static void segment(int);
+static void space(int);
+static void target(Node);
+static int ckstack(Node, int);
+static int memop(Node);
+static int sametree(Node, Node);
+
+static void offsetsp(int);
+static void offsethl(int);
+static void mv_8_8(int dreg, int sreg);
+static void mv_16_16(int dreg, int sreg);
+static void cvt_s8_16(int dreg, int sreg);
+static void cvt_u8_16(int dreg, int sreg);
+static void load_acc(long val, int byte, int checklast);
+long const_val(Node p);
+
+#define LOW 0
+#define HIGH 1
+
+static Symbol charreg[32], intreg[32];
+static Symbol fltreg[32];
+
+static Symbol charregw, intregw, fltregw;
+
+static char *hreg[] = { "H", "B", "D" };
+static char *lreg[] = { "L", "C", "E" };
+
+static int cseg;
+static int bank;
+static char bank_str[10];
+static int argstack;
+
+%}
+%start stmt
+%term CNSTF2=2065
+%term CNSTI1=1045 CNSTI2=2069
+%term CNSTP2=2071
+%term CNSTU1=1046 CNSTU2=2070
+
+%term ARGB=41
+%term ARGF2=2081
+%term ARGI1=1061 ARGI2=2085
+%term ARGP2=2087
+%term ARGU1=1062 ARGU2=2086
+
+%term ASGNB=57
+%term ASGNF2=2097
+%term ASGNI1=1077 ASGNI2=2101
+%term ASGNP2=2103
+%term ASGNU1=1078 ASGNU2=2102
+
+%term INDIRB=73
+%term INDIRF2=2113
+%term INDIRI1=1093 INDIRI2=2117
+%term INDIRP2=2119
+%term INDIRU1=1094 INDIRU2=2118
+
+%term CVFF2=2161
+%term CVFI1=1141 CVFI2=2165
+
+%term CVIF2=2177
+%term CVII1=1157 CVII2=2181
+%term CVIU1=1158 CVIU2=2182
+
+%term CVPU2=2198
+
+%term CVUI1=1205 CVUI2=2229
+%term CVUP2=2231
+%term CVUU1=1206 CVUU2=2230
+
+%term NEGF2=2241
+%term NEGI1=1221 NEGI2=2245
+
+%term CALLB=217
+%term CALLF2=2257
+%term CALLI1=1237 CALLI2=2261
+%term CALLP2=2263
+%term CALLU1=1238 CALLU2=2262
+%term CALLV=216
+
+%term RETF2=2289
+%term RETI1=1269 RETI2=2293
+%term RETP2=2295
+%term RETU1=1270 RETU2=2294
+%term RETV=248
+
+%term ADDRGP2=2311
+
+%term ADDRFP2=2327
+
+%term ADDRLP2=2343
+
+%term ADDF2=2353
+%term ADDI1=1333 ADDI2=2357
+%term ADDP2=2359
+%term ADDU1=1334 ADDU2=2358
+
+%term SUBF2=2369
+%term SUBI1=1349 SUBI2=2373
+%term SUBP2=2375
+%term SUBU1=1350 SUBU2=2374
+
+%term LSHI1=1365 LSHI2=2389
+%term LSHU1=1366 LSHU2=2390
+
+%term MODI1=1381 MODI2=2405
+%term MODU1=1382 MODU2=2406
+
+%term RSHI1=1397 RSHI2=2421
+%term RSHU1=1398 RSHU2=2422
+
+%term BANDI1=1413 BANDI2=2437
+%term BANDU1=1414 BANDU2=2438
+
+%term BCOMI1=1429 BCOMI2=2453
+%term BCOMU1=1430 BCOMU2=2454
+
+%term BORI1=1445 BORI2=2469
+%term BORU1=1446 BORU2=2470
+
+%term BXORI1=1461 BXORI2=2485
+%term BXORU1=1462 BXORU2=2486
+
+%term DIVF2=2497
+%term DIVI1=1477 DIVI2=2501
+%term DIVU1=1478 DIVU2=2502
+
+%term MULF2=2513
+%term MULI1=1493 MULI2=2517
+%term MULU1=1494 MULU2=2518
+
+%term EQF2=2529
+%term EQI1=1509 EQI2=2533
+%term EQU1=1510 EQU2=2534
+
+%term GEF2=2545
+%term GEI1=1525 GEI2=2549
+%term GEU1=1526 GEU2=2550
+
+%term GTF2=2561
+%term GTI1=1541 GTI2=2565
+%term GTU1=1542 GTU2=2566
+
+%term LEF2=2577
+%term LEI1=1557 LEI2=2581
+%term LEU1=1558 LEU2=2582
+
+%term LTF2=2593
+%term LTI1=1573 LTI2=2597
+%term LTU1=1574 LTU2=2598
+
+%term NEF2=2609
+%term NEI1=1589 NEI2=2613
+%term NEU1=1590 NEU2=2614
+
+%term JUMPV=584
+
+%term LABELV=600
+
+%term LOADB=233
+%term LOADF2=2273
+%term LOADI1=1253 LOADI2=2277
+%term LOADP2=2279
+%term LOADU1=1254 LOADU2=2278
+
+%term VREGP=711
+%%
+reg:  INDIRI1(VREGP)     "# read register\n"
+reg:  INDIRU1(VREGP)     "# read register\n"
+
+reg:  INDIRI2(VREGP)     "# read register\n"
+reg:  INDIRU2(VREGP)     "# read register\n"
+reg:  INDIRP2(VREGP)     "# read register\n"
+
+stmt: ASGNI1(VREGP,reg)  "# write register\n"
+stmt: ASGNU1(VREGP,reg)  "# write register\n"
+
+stmt: ASGNI2(VREGP,reg)  "# write register\n"
+stmt: ASGNU2(VREGP,reg)  "# write register\n"
+stmt: ASGNP2(VREGP,reg)  "# write register\n"
+
+con:  CNSTI1  "%#%a"
+con:  CNSTU1  "%#%a"
+con:  CNSTI2  "%#%a"
+con:  CNSTU2  "%#%a"
+con:  CNSTP2  "%#%a"
+
+con8: CNSTI1  "%#%a"  range(a, 0, 255)
+con8: CNSTU1  "%#%a"  range(a, 0, 255)
+con8: CNSTI2  "%#%a"  range(a, 0, 255)
+con8: CNSTU2  "%#%a"  range(a, 0, 255)
+
+stmt: reg     ""
+
+reg:  ADDRGP2 "# \tLD\t%c,%a\n"  1
+reg:  ADDRFP2 "# \tLD\t%c,%a\n"  3
+reg:  ADDRLP2 "# \tLD\t%c,%a\n"  3
+
+stk:  ADDRFP2 "%a+%F(SP)"
+stk:  ADDRLP2 "%a+%F(SP)"
+
+acon: ADDRGP2 "(%#%a)"
+acon: con     "(%0)"
+
+base: acon    "%0"
+base: reg     "%0"  3
+
+addr: base    "%0"
+addr: stk     "%0"
+
+mem:  INDIRI1(addr)  "# (%0)"
+mem:  INDIRU1(addr)  "# (%0)"
+
+rc:   con     "%0"
+rc:   reg     "%0"
+
+mrc:  mem  "%0"  3
+mrc:  rc   "%0"
+
+reg:  addr    "# \tLD\t%c,%0\n"  1
+reg:  mrc     "# \tLD\t%c,%0\n"  1
+
+reg:  INDIRI1(addr)  "# \tLD\t%c,(%0)\n"  4
+reg:  INDIRU1(addr)  "# \tLD\t%c,(%0)\n"  4
+reg:  INDIRI2(addr)  "# \tLD\t%c,(%0)\n"  4
+reg:  INDIRU2(addr)  "# \tLD\t%c,(%0)\n"  4
+reg:  INDIRP2(addr)  "# \tLD\t%c,(%0)\n"  4
+
+reg:  LOADI1(reg)    "# \tLD\t%c,%0\n"  move(a)
+reg:  LOADU1(reg)    "# \tLD\t%c,%0\n"  move(a)
+reg:  LOADI2(reg)    "# \tLD\t%c,%0\n"  move(a)
+reg:  LOADU2(reg)    "# \tLD\t%c,%0\n"  move(a)
+reg:  LOADP2(reg)    "# \tLD\t%c,%0\n"  move(a)
+
+reg:  ADDI1(reg,rc)  "# ?\tLD\t%c,%0\n\tADD\t%c,%1\n"  1
+reg:  ADDU1(reg,rc)  "# ?\tLD\t%c,%0\n\tADD\t%c,%1\n"  1
+reg:  ADDI2(reg,rc)  "# ?\tLD\t%c,%0\n\tADD\t%c,%1\n"  1
+reg:  ADDU2(reg,rc)  "# ?\tLD\t%c,%0\n\tADD\t%c,%1\n"  1
+reg:  ADDP2(reg,rc)  "# ?\tLD\t%c,%0\n\tADD\t%c,%1\n"  1
+
+reg:  SUBI1(reg,rc)  "# ?\tLD\t%c,%0\n\tSUB\t%c,%1\n"  1
+reg:  SUBU1(reg,rc)  "# ?\tLD\t%c,%0\n\tSUB\t%c,%1\n"  1
+reg:  SUBI2(reg,rc)  "# ?\tLD\t%c,%0\n\tSUB\t%c,%1\n"  1
+reg:  SUBU2(reg,rc)  "# ?\tLD\t%c,%0\n\tSUB\t%c,%1\n"  1
+reg:  SUBP2(reg,rc)  "# ?\tLD\t%c,%0\n\tSUB\t%c,%1\n"  1
+
+reg:  BANDI1(reg,rc) "# ?\tLD\t%c,%0\n\tAND\t%c,%1\n"  1
+reg:  BANDU1(reg,rc) "# ?\tLD\t%c,%0\n\tAND\t%c,%1\n"  1
+reg:  BANDI2(reg,rc) "# ?\tLD\t%c,%0\n\tAND\t%c,%1\n"  1
+reg:  BANDU2(reg,rc) "# ?\tLD\t%c,%0\n\tAND\t%c,%1\n"  1
+
+reg:  BORI1(reg,rc)  "# ?\tLD\t%c,%0\n\tOR\t%c,%1\n"   1
+reg:  BORU1(reg,rc)  "# ?\tLD\t%c,%0\n\tOR\t%c,%1\n"   1
+reg:  BORI2(reg,rc)  "# ?\tLD\t%c,%0\n\tOR\t%c,%1\n"   1
+reg:  BORU2(reg,rc)  "# ?\tLD\t%c,%0\n\tOR\t%c,%1\n"   1
+
+reg:  BXORI1(reg,rc) "# ?\tLD\t%c,%0\n\tXOR\t%c,%1\n"  1
+reg:  BXORU1(reg,rc) "# ?\tLD\t%c,%0\n\tXOR\t%c,%1\n"  1
+reg:  BXORI2(reg,rc) "# ?\tLD\t%c,%0\n\tXOR\t%c,%1\n"  1
+reg:  BXORU2(reg,rc) "# ?\tLD\t%c,%0\n\tXOR\t%c,%1\n"  1
+
+reg:  BCOMI1(reg)  "# ?\tLD\t%c,%0\n\tCPL\t%c\n"  1
+reg:  BCOMU1(reg)  "# ?\tLD\t%c,%0\n\tCPL\t%c\n"  1
+reg:  BCOMI2(reg)  "# ?\tLD\t%c,%0\n\tCPL\t%c\n"  1
+reg:  BCOMU2(reg)  "# ?\tLD\t%c,%0\n\tCPL\t%c\n"  1
+
+reg:  NEGI1(reg)  "# ?\tLD\t%c,%0\n\tNEG\t%c\n"  1
+reg:  NEGI2(reg)  "# ?\tLD\t%c,%0\n\tNEG\t%c\n"  1
+
+rc8:  con8   "%0"
+rc8:  reg    "%0"  5
+
+reg:  LSHI1(reg,rc8)  "# \tCALL\t.asl8\n"    8
+reg:  LSHI2(reg,rc8)  "# \tCALL\t.asl16\n"   16
+reg:  LSHU1(reg,rc8)  "# \tCALL\t.lsl8\n"    8
+reg:  LSHU2(reg,rc8)  "# \tCALL\t.lsl16\n"   16
+
+reg:  RSHI1(reg,rc8)  "# \tCALL\t.asr8\n"    8
+reg:  RSHI2(reg,rc8)  "# \tCALL\t.asr16\n"   16
+reg:  RSHU1(reg,rc8)  "# \tCALL\t.lsr8\n"    8
+reg:  RSHU2(reg,rc8)  "# \tCALL\t.lsr16\n"   16
+
+reg:  MULI1(reg,reg)  "# \tCALL\t.mul8\n"    16
+reg:  MULI2(reg,reg)  "# \tCALL\t.mul16\n"   16
+reg:  MULU1(reg,reg)  "# \tCALL\t.mulu8\n"   16
+reg:  MULU2(reg,reg)  "# \tCALL\t.mulu16\n"  16
+
+reg:  DIVI1(reg,reg)  "# \tCALL\t.div8\n"    16
+reg:  DIVI2(reg,reg)  "# \tCALL\t.div16\n"   16
+reg:  DIVU1(reg,reg)  "# \tCALL\t.divu8\n"   16
+reg:  DIVU2(reg,reg)  "# \tCALL\t.divu16\n"  16
+
+reg:  MODI1(reg,reg)  "# \tCALL\t.mod8\n"    16
+reg:  MODI2(reg,reg)  "# \tCALL\t.mod16\n"   16
+reg:  MODU1(reg,reg)  "# \tCALL\t.modu8\n"   16
+reg:  MODU2(reg,reg)  "# \tCALL\t.modu16\n"  16
+
+stmt: ASGNI1(addr,ADDI1(mem,rc))    "# \tADD\t(HL)\n"  memop(a)
+stmt: ASGNU1(addr,ADDU1(mem,rc))    "# \tADD\t(HL)\n"  memop(a)
+stmt: ASGNI1(addr,SUBI1(mem,rc))    "# \tSUB\t(HL)\n"  memop(a)
+stmt: ASGNU1(addr,SUBU1(mem,rc))    "# \tSUB\t(HL)\n"  memop(a)
+stmt: ASGNI1(addr,BANDI1(mem,rc))   "# \tAND\t(HL)\n"  memop(a)
+stmt: ASGNU1(addr,BANDU1(mem,rc))   "# \tAND\t(HL)\n"  memop(a)
+stmt: ASGNI1(addr,BORI1(mem,rc))    "# \tOR\t(HL)\n"   memop(a)
+stmt: ASGNU1(addr,BORU1(mem,rc))    "# \tOR\t(HL)\n"   memop(a)
+stmt: ASGNI1(addr,BXORI1(mem,rc))   "# \tXOR\t(HL)\n"  memop(a)
+stmt: ASGNU1(addr,BXORU1(mem,rc))   "# \tXOR\t(HL)\n"  memop(a)
+stmt: ASGNI1(addr,BCOMI1(mem))      "# \tCPL\t(HL)\n"  memop(a)
+stmt: ASGNU1(addr,BCOMU1(mem))      "# \tCPL\t(HL)\n"  memop(a)
+stmt: ASGNI1(addr,NEGI1(mem))       "# \tNEG\t(HL)\n"  memop(a)
+stmt: ASGNI1(addr,LSHI1(mem,con8))  "# \tSLA\t(HL)\n"  memop(a)
+stmt: ASGNU1(addr,LSHU1(mem,con8))  "# \tSLA\t(HL)\n"  memop(a)
+stmt: ASGNI1(addr,RSHI1(mem,con8))  "# \tSRA\t(HL)\n"  memop(a)
+stmt: ASGNU1(addr,RSHU1(mem,con8))  "# \tSRL\t(HL)\n"  memop(a)
+
+reg:  CVII1(reg)  "# truncate\n"  1
+reg:  CVIU1(reg)  "# truncate\n"  1
+reg:  CVUI1(reg)  "# truncate\n"  1
+reg:  CVUU1(reg)  "# truncate\n"  1
+
+reg:  CVII2(reg)  "# extend\n"  1
+reg:  CVIU2(reg)  "# extend\n"  1
+reg:  CVUI2(reg)  "# extend\n"  1
+reg:  CVUU2(reg)  "# extend\n"  1
+
+reg:  CVUP2(reg)  "# extend\n"  1
+reg:  CVPU2(reg)  "# \tLD\t%c,%0\n"  move(a)
+
+stmt: ASGNI1(addr,rc)  "# \tLD\t(%0),%1\n"   3
+stmt: ASGNU1(addr,rc)  "# \tLD\t(%0),%1\n"   3
+stmt: ASGNI2(addr,rc)  "# \tLD\t(%0),%1\n"   3
+stmt: ASGNU2(addr,rc)  "# \tLD\t(%0),%1\n"   3
+stmt: ASGNP2(addr,rc)  "# \tLD\t(%0),%1\n"   3
+stmt: ASGNI1(stk,rc)   "# \tLD\t(%0),%1\n"   1
+stmt: ASGNU1(stk,rc)   "# \tLD\t(%0),%1\n"   1
+stmt: ASGNI2(stk,rc)   "# \tLD\t(%0),%1\n"   1
+stmt: ASGNU2(stk,rc)   "# \tLD\t(%0),%1\n"   1
+stmt: ASGNP2(stk,rc)   "# \tLD\t(%0),%1\n"   1
+
+stmt: ARGI1(rc)   "# \tPUSH\t%0\n"  1
+stmt: ARGU1(rc)   "# \tPUSH\t%0\n"  1
+stmt: ARGI2(reg)  "# \tPUSH\t%0\n"  1
+stmt: ARGU2(reg)  "# \tPUSH\t%0\n"  1
+stmt: ARGP2(reg)  "# \tPUSH\t%0\n"  1
+
+stmt: ASGNB(reg,INDIRB(reg))  "# ASGN struct\n"
+stmt: ARGB(INDIRB(reg))       "# ARG struct\n"
+
+addrj: ADDRGP2 "%a"
+addrj: reg     "(%0)"  2
+
+stmt: JUMPV(addrj)  "\tJP\t%0\n"  3
+stmt: LABELV        "%a:\n"
+stmt: EQI1(reg,mrc) "# \tCP\t%0,%1\n\tJP\tZ,%a\n"   4
+stmt: EQU1(reg,mrc) "# \tCP\t%0,%1\n\tJP\tZ,%a\n"   4
+stmt: EQI2(reg,rc)  "# \tCP\t%0,%1\n\tJP\tZ,%a\n"   8
+stmt: EQU2(reg,rc)  "# \tCP\t%0,%1\n\tJP\tZ,%a\n"   8
+
+stmt: GEI1(reg,mrc) "# \tCP\t%0,%1\n\tJP\tPZ,%a\n"  4
+stmt: GEU1(reg,mrc) "# \tCP\t%0,%1\n\tJP\tPZ,%a\n"  4
+stmt: GEI2(reg,rc)  "# \tCP\t%0,%1\n\tJP\tPZ,%a\n"  8
+stmt: GEU2(reg,rc)  "# \tCP\t%0,%1\n\tJP\tPZ,%a\n"  8
+
+stmt: GTI1(reg,mrc) "# \tCP\t%0,%1\n\tJP\tP,%a\n"   4
+stmt: GTU1(reg,mrc) "# \tCP\t%0,%1\n\tJP\tP,%a\n"   4
+stmt: GTI2(reg,rc)  "# \tCP\t%0,%1\n\tJP\tP,%a\n"   8
+stmt: GTU2(reg,rc)  "# \tCP\t%0,%1\n\tJP\tP,%a\n"   8
+
+stmt: LEI1(reg,mrc) "# \tCP\t%0,%1\n\tJP\tMZ,%a\n"  4
+stmt: LEU1(reg,mrc) "# \tCP\t%0,%1\n\tJP\tMZ,%a\n"  4
+stmt: LEI2(reg,rc)  "# \tCP\t%0,%1\n\tJP\tMZ,%a\n"  8
+stmt: LEU2(reg,rc)  "# \tCP\t%0,%1\n\tJP\tMZ,%a\n"  8
+
+stmt: LTI1(reg,mrc) "# \tCP\t%0,%1\n\tJP\tM,%a\n"   4
+stmt: LTU1(reg,mrc) "# \tCP\t%0,%1\n\tJP\tM,%a\n"   4
+stmt: LTI2(reg,rc)  "# \tCP\t%0,%1\n\tJP\tM,%a\n"   8
+stmt: LTU2(reg,rc)  "# \tCP\t%0,%1\n\tJP\tM,%a\n"   8
+
+stmt: NEI1(reg,mrc) "# \tCP\t%0,%1\n\tJP\tNZ,%a\n"  4
+stmt: NEU1(reg,mrc) "# \tCP\t%0,%1\n\tJP\tNZ,%a\n"  4
+stmt: NEI2(reg,rc)  "# \tCP\t%0,%1\n\tJP\tNZ,%a\n"  8
+stmt: NEU2(reg,rc)  "# \tCP\t%0,%1\n\tJP\tNZ,%a\n"  8
+
+reg:  CALLI1(addrj) "# \tCALL\t%0\n"
+reg:  CALLU1(addrj) "# \tCALL\t%0\n"
+reg:  CALLI2(addrj) "# \tCALL\t%0\n"
+reg:  CALLU2(addrj) "# \tCALL\t%0\n"
+reg:  CALLP2(addrj) "# \tCALL\t%0\n"
+stmt: CALLV(addrj)  "# \tCALL\t%0\n"
+
+stmt: RETI1(reg)    "# ret\n"
+stmt: RETU1(reg)    "# ret\n"
+stmt: RETI2(reg)    "# ret\n"
+stmt: RETU2(reg)    "# ret\n"
+stmt: RETP2(reg)    "# ret\n"
+
+reg:  INDIRF2(VREGP)     "# read register\n"
+
+stmt: ASGNF2(VREGP,reg)  "# write register\n"
+
+reg: INDIRF2(addr)     "# load float"
+stmt: ASGNF2(addr,reg) "# store float"
+stmt: ARGF2(reg)       "# float argument\n"
+flt: reg   "%0"
+reg: NEGF2(reg)        "# invert float\n"
+reg: ADDF2(reg,flt)    "# add float\n"
+reg: DIVF2(reg,flt)    "# div float\n"
+reg: MULF2(reg,flt)    "# mul float\n"
+reg: SUBF2(reg,flt)    "# sub float\n"
+reg: CVFF2(reg)        "# CVFF2\n"
+reg: CVFI1(reg)        "# CVFI2\n"
+reg: CVFI2(reg)        "# CVFI2\n"
+reg: CVIF2(reg)        "# CVIF2\n"
+
+stmt: EQF2(reg,reg) "# compare double eq\n"
+stmt: GEF2(reg,reg) "# compare double ge\n"
+stmt: GTF2(reg,reg) "# compare double gt\n"
+stmt: LEF2(reg,reg) "# compare double le\n"
+stmt: LTF2(reg,reg) "# compare double lt\n"
+
+reg: CALLF2(addrj)   "# \tCALL\t%0\n"
+
+stmt: RETF2(reg)  "# ret\n"
+%%
+
+/*
+
+  Future optimizations:
+
+- Optimize:
+
+stmt: ASGNI2(addr,ADDI2(mem,rc))    "# \tADD\t(HL)\n"  memop(a)
+stmt: ASGNU2(addr,ADDU2(mem,rc))    "# \tADD\t(HL)\n"  memop(a)
+stmt: ASGNI2(addr,SUBI2(mem,rc))    "# \tSUB\t(HL)\n"  memop(a)
+stmt: ASGNU2(addr,SUBU2(mem,rc))    "# \tSUB\t(HL)\n"  memop(a)
+stmt: ASGNI2(addr,BANDI2(mem,rc))   "# \tAND\t(HL)\n"  memop(a)
+stmt: ASGNU2(addr,BANDU2(mem,rc))   "# \tAND\t(HL)\n"  memop(a)
+stmt: ASGNI2(addr,BORI2(mem,rc))    "# \tOR\t(HL)\n"   memop(a)
+stmt: ASGNU2(addr,BORU2(mem,rc))    "# \tOR\t(HL)\n"   memop(a)
+stmt: ASGNI2(addr,BXORI2(mem,rc))   "# \tXOR\t(HL)\n"  memop(a)
+stmt: ASGNU2(addr,BXORU2(mem,rc))   "# \tXOR\t(HL)\n"  memop(a)
+stmt: ASGNI2(addr,BCOMI2(mem))      "# \tCPL\t(HL)\n"  memop(a)
+stmt: ASGNU2(addr,BCOMU2(mem))      "# \tCPL\t(HL)\n"  memop(a)
+stmt: ASGNI2(addr,NEGI2(mem))       "# \tNEG\t(HL)\n"  memop(a)
+stmt: ASGNI2(addr,LSHI2(mem,con8))  "# \tSLA\t(HL)\n"  memop(a)
+stmt: ASGNU2(addr,LSHU2(mem,con8))  "# \tSLA\t(HL)\n"  memop(a)
+stmt: ASGNI2(addr,RSHI2(mem,con8))  "# \tSRA\t(HL)\n"  memop(a)
+stmt: ASGNU2(addr,RSHU2(mem,con8))  "# \tSRL\t(HL)\n"  memop(a)
+
+  .mul8, .div8, etc. in crt0s
+
+  Unnecessary moves (e.g. LD E,A; LD A,E )
+
+
+- Add:
+
+  reg: ADDx1(reg,mrc)
+  reg: ADDx2(reg,mrc)
+  reg: SUBx1(reg,mrc)
+  etc...
+
+  reg: MULx1(reg,mrc)
+  reg: MULx2(reg,mrc)
+  reg: DIVx1(reg,mrc)
+  etc...
+
+  stmt: ASGNx2(addr,ADDx2(mem,rc))
+  stmt: ASGNx2(addr,SUBx2(mem,rc))
+  etc...
+
+  reg: MULx1(reg,rc)
+  reg: MULx2(reg,rc)
+  reg: DIVx1(reg,rc)
+  etc...
+
+*/
+
+/*
+
+How to compare 2 values?
+************************
+
+if(B >= D) <=> if(D <= B): UNSIGNED
+***********************************
+
+LD A,B
+CP D       ; B - D
+           ; C is set if B < D
+           ; C is no set if B >= D
+JP NC,addr ; Jump if B >= D
+
+if(B >= D) <=> if(D <= B): SIGNED
+*********************************
+
+LD A,B
+SUB D      ; B - D
+           ; Is (B - D) >= 0?
+AND 0x80   ; Is A positive?
+           ; Z is set if A is positive, i.e. B >= D
+           ; Z is no set if A is negative, i.e. B < D
+JP Z,addr  ; Jump if B >= D
+
+
+		RL D
+		CCF
+		RR D
+		LD A,B
+		ADD 0x80
+		CP D
+#
+		RRA		; Store C
+		RL D
+		CCF
+		RR D
+		RLA		; Restore C
+#
+		JP NC,addr
+
+
+		LD A,D
+		LD (.save),A
+		ADD 0x80
+		LD D,A
+
+		LD A,B
+		ADD 0x80
+		SUB D
+
+		LD A,(.save)
+		LD D,A
+		JP NC,addr
+
+
+
+		LD A,B
+		XOR D
+		AND 0x80
+		LD A,B
+		JR Z,same
+		SUB D
+		AND 0x80
+		JP Z,addr
+		JR cont
+same:
+		SUB D
+		AND 0x80
+		JP NZ,addr
+cont:
+
+
+
+
+
+
+
+************************************************************
+
+if(B > D) <=> if(D < B): UNSIGNED
+*********************************
+
+LD A,D
+CP B       ; D - B
+           ; C is set if B > D
+           ; C is no set if B >= D
+JP C,addr  ; Jump if B > D
+
+if(B > D) <=> if(D < B): SIGNED
+*******************************
+
+LD A,D
+SUB B      ; D - B
+           ; Is (D - B) < 0?
+AND 0x80   ; Is A positive?
+           ; Z is set if A is positive, i.e. D >= B
+           ; Z is no set if A is negative, i.e. D < B
+JP NZ,addr ; Jump if D < B
+
+************************************************************
+
+if(BC >= DE) <=> if(DE <= BC)
+*****************************
+
+LD A,B
+SUB D      ; B - D
+JR NZ,1$   ; Is B == D?
+           ; B == D
+LD A,C     ; Is C >= E?
+SUB E      ; C - E
+1$:        ; B != D
+CP 0x80    ; A - 0x80
+           ; C is set if A < 0x80, i.e. A >= 0
+           ; C is no set if A >= 0x80, i.e. A < 0
+JP C,addr  ; Jump if BC >= DE
+
+************************************************************
+
+if(BC > DE) <=> if(DE < BC)
+***************************
+
+LD A,D
+SUB B      ; D - B
+JR NZ,1$   ; Is B == D?
+           ; B == D
+LD A,E     ; Is E > C?
+SUB C      ; E - C
+1$:        ; B != D
+CP 0x80    ; A - 0x80
+           ; C is set if A < 0x80, i.e. A >= 0
+           ; C is no set if A >= 0x80, i.e. A < 0
+JP NC,addr ; Jump if BC > DE
+
+*/
+
+static void progbeg(int argc, char *argv[]) {
+	int i;
+
+	{
+		union {
+			char c;
+			int i;
+		} u;
+		u.i = 0;
+		u.c = 1;
+		swap = ((int)(u.i == 1)) != IR->little_endian;
+	}
+	parseflags(argc, argv);
+	bank = 0;
+	bank_str[0] = 0;
+	for(i = 0; i < argc; i++)
+		if(strncmp(argv[i], "-B", 2) == 0) {
+			bank = atoi(argv[i] + 2);
+			sprintf(bank_str, "_%d", bank);
+		}
+
+	intreg[HL] = mkreg("HL", HL, 1, IREG);
+	intreg[BC] = mkreg("BC", BC, 1, IREG);
+	intreg[DE] = mkreg("DE", DE, 1, IREG);
+
+	charreg[HL]	 = mkreg("L", HL, 1, IREG);
+	charreg[BC]	 = mkreg("C", BC, 1, IREG);
+	charreg[DE]	 = mkreg("E", DE, 1, IREG);
+
+	for(i = 0; i < 8; i++)
+		fltreg[i] = mkreg("%d", i, 0, FREG);
+
+	charregw = mkwildcard(charreg);
+	intregw = mkwildcard(intreg);
+	fltregw = mkwildcard(fltreg);
+
+	tmask[IREG] = (1<<BC) | (1<<DE);
+	vmask[IREG] = 0;
+	tmask[FREG] = 0xFF;
+	vmask[FREG] = 0;
+
+	print("\t;; File generated by GBDK 2.0, P. Felber, 1995-1997\n");
+	print("\n");
+	print("\t.globl\t.mul8, .mul16, .mulu8, .mulu16\n");
+	print("\t.globl\t.div8, .div16, .divu8, .divu16\n");
+	print("\t.globl\t.mod8, .mod16, .modu8, .modu16\n");
+	print("\t.globl\t.asl8, .asl16, .lsl8, .lsl16\n");
+	print("\t.globl\t.asr8, .asr16, .lsr8, .lsr16\n");
+	print("\n");
+	print("\t;; Ordering of segments for the linker\n");
+	print("\t.area\t_CODE%s\n", bank_str);
+	print("\t.area\t_DATA%s\n", bank_str);
+	print("\t.area\t_LIT%s\n", bank_str);
+	print("\t.area\t_BSS%s\n", bank_str);
+	print("\n");
+
+	cseg = 0;
+	argstack = 0;
+}
+
+static Symbol rmap(int opk) {
+	switch(optype(opk)) {
+	case B: case P:
+		return intregw;
+	case I: case U:
+		if(opsize(opk) == 1)
+			return charregw;
+		else
+			return intregw;
+	case F:
+		return fltregw;
+	default:
+		return 0;
+	}
+}
+
+static void segment(int n) {
+	if(n == cseg)
+		return;
+	if(cseg == CODE)
+		print("\t;; _CODE%s ends\n", bank_str);
+	else if(cseg == LIT)
+		print("\t;; _LIT%s ends\n", bank_str);
+	else if(cseg == DATA)
+		print("\t;; _DATA%s ends\n", bank_str);
+	else if(cseg == BSS)
+		print("\t;; _BSS%s ends\n", bank_str);
+	cseg = n;
+	if(cseg == CODE)
+		print("\t.area\t_CODE%s\n", bank_str);
+	else if(cseg == LIT)
+		print("\t.area\t_LIT%s\n", bank_str);
+	else if(cseg == DATA)
+		print("\t.area\t_DATA%s\n", bank_str);
+	else if(cseg == BSS)
+		print("\t.area\t_BSS%s\n", bank_str);
+}
+
+static void progend(void) {
+	segment(0);
+	print("\t;; End of program\n");
+}
+
+#define HARDWARE_REG_STR "__reg_"
+#define HARDWARE_REG_LEN 6
+#define HARDWARE_REG(addr) (!strncmp(addr, HARDWARE_REG_STR, HARDWARE_REG_LEN))
+
+#define REG(p)  (getregnum(p))
+#define LEFT_CHILD_REG(p)  (REG(LEFT_CHILD(p)))
+#define RIGHT_CHILD_REG(p)  (REG(RIGHT_CHILD(p)))
+#define LEFT_X_CHILD_REG(p)  (REG(LEFT_X_CHILD(p)))
+#define RIGHT_X_CHILD_REG(p)  (REG(RIGHT_X_CHILD(p)))
+#define RIGHT_REG(p) \
+	(p->kids[1]->x.registered ? RIGHT_CHILD_REG(p) : \
+	(p->x.kids[1] ? RIGHT_X_CHILD_REG(p) : LEFT_X_CHILD_REG(p)))
+#define LEFT_REG(p) \
+	(p->kids[0]->x.registered ? LEFT_CHILD_REG(p) : \
+	(p->x.kids[0] ? LEFT_X_CHILD_REG(p) : LEFT_X_CHILD_REG(p)))
+
+#define VAL(p) \
+	((generic(p->op) == CNST \
+	|| specific(p->op) == ADDRG+P) ? \
+	p->syms[0]->x.name : \
+	p->syms[RX]->u.t.cse->syms[0]->x.name)
+#define RIGHT_VAL(p) VAL(p->kids[1])
+#define LEFT_VAL(p) VAL(p->kids[0])
+
+#define IS_CONST(p) \
+	(!p->x.registered \
+	&& (generic(p->op) == CNST \
+	|| (generic(p->op) == INDIR \
+	&& p->kids[0]->op == VREG+P \
+	&& p->syms[RX]->u.t.cse \
+	&& generic(p->syms[RX]->u.t.cse->op) == CNST)))
+#define IS_RIGHT_CONST(p) IS_CONST(p->kids[1])
+#define IS_LEFT_CONST(p) IS_CONST(p->kids[0])
+
+#define IS_ADDRGP(p) \
+	(!p->x.registered \
+	&& (specific(p->op) == ADDRG+P \
+	|| (generic(p->op) == INDIR \
+	&& p->kids[0]->op == VREG+P \
+	&& p->syms[RX]->u.t.cse \
+	&& specific(p->syms[RX]->u.t.cse->op) == ADDRG+P)))
+#define IS_RIGHT_ADDRGP(p) IS_ADDRGP(p->kids[1])
+#define IS_LEFT_ADDRGP(p) IS_ADDRGP(p->kids[0])
+
+#define IS_INDIR(p) \
+	(generic(p->op) == INDIR \
+	&& p->kids[0]->op != VREG+P)
+#define IS_RIGHT_INDIR(p) (IS_INDIR(p->kids[1]))
+
+#define IS_LEFT_ADDRFP(p) \
+	(specific(p->kids[0]->op) == ADDRF+P)
+
+#define IS_LEFT_ADDRLP(p) \
+	(specific(p->kids[0]->op) == ADDRL+P)
+
+static void target(Node p) {
+	assert(p);
+	switch(specific(p->op)) {
+
+		case CALL+I: case CALL+U: case CALL+P: case CALL+V:
+			setreg(p, intreg[DE]);
+			if(!IS_LEFT_CONST(p))
+				rtarget(p, 0, intreg[HL]);
+			break;
+		case RET+I: case RET+U: case RET+P:
+			/* Return value in DE */
+			rtarget(p, 0, intreg[DE]);
+			break;
+		case JUMP+V:
+			if(!IS_LEFT_CONST(p))
+				rtarget(p, 0, intreg[HL]);
+			break;
+		case MUL+I: case MUL+U:
+			setreg(p, intreg[BC]);
+			rtarget(p, 0, intreg[BC]);
+			rtarget(p, 1, intreg[DE]);
+			break;
+		case DIV+I: case DIV+U:
+			setreg(p, intreg[BC]);
+			rtarget(p, 0, intreg[BC]);
+			rtarget(p, 1, intreg[DE]);
+			break;
+		case MOD+I: case MOD+U:
+			setreg(p, intreg[DE]);
+			rtarget(p, 0, intreg[BC]);
+			rtarget(p, 1, intreg[DE]);
+			break;
+		case LSH+I: case LSH+U:
+		case RSH+I: case RSH+U:
+			if(generic(p->kids[1]->op) != CNST) {
+				setreg(p, intreg[BC]);
+				rtarget(p, 0, intreg[BC]);
+			}
+			break;
+	}
+}
+
+static void clobber(Node p) {
+	static int nstack = 0;
+
+	assert(p);
+
+	nstack = ckstack(p, nstack);
+	assert(p->count > 0 || nstack == 0);
+
+	switch (p->op) {
+	}
+}
+
+static int memop(Node p) {
+        assert(p);
+        assert(generic(p->op) == ASGN);
+        assert(p->kids[0]);
+        assert(p->kids[1]);
+        if(generic(p->kids[1]->kids[0]->op) == INDIR
+        && sametree(p->kids[0], p->kids[1]->kids[0]->kids[0]))
+                return 1;
+        else
+                return LBURG_MAX;
+}
+
+static int sametree(Node p, Node q) {
+        return p == NULL && q == NULL
+        || p && q && p->op == q->op && p->syms[0] == q->syms[0]
+                && sametree(p->kids[0], q->kids[0])
+                && sametree(p->kids[1], q->kids[1]);
+}
+
+static void emit2(Node p) {
+#ifdef DEBUG
+	{
+		int i, j;
+
+		print("%s\n", opname(p->op));
+		print("#%d %s (%x)\n", p->x.inst, opname(p->op), (char *)p);
+		for(i = 0; i < NELEMS(p->kids) && p->kids[i]; i++) {
+			print(" kids[%d]: #%d %s (%x)\n", i, p->kids[i]->x.inst, opname(p->kids[i]->op), (char *)p->kids[i]);
+			for(j = 0; j < 3; j++) {
+				if(p->kids[i]->syms[j] && p->kids[i]->syms[j]->x.name)
+					print("  syms[%d]: %s\n", j, p->kids[i]->syms[j]->x.name);
+			}
+		}
+		for(i = 0; i < NELEMS(p->x.kids) && p->x.kids[i]; i++) {
+			print(" x.kids[%d]: #%d %s (%x)\n", i, p->x.kids[i]->x.inst, opname(p->x.kids[i]->op), (char *)p->x.kids[i]);
+			for(j = 0; j < 3; j++) {
+				if(p->x.kids[i]->syms[j] && p->x.kids[i]->syms[j]->x.name)
+					print("  syms[%d]: %s\n", j, p->x.kids[i]->syms[j]->x.name);
+			}
+		}
+		for(i = 0; i < 3; i++) {
+			if(p->syms[i] && p->syms[i]->x.name)
+				print(" syms[%d]: %s\n", i, p->syms[i]->x.name);
+		}
+		print("\n", opname(p->op));
+	}
+#endif
+	switch(p->op) {
+		case INDIR+I+sizeop(1):
+		case INDIR+U+sizeop(1):
+		if(p->kids[0]->op == VREG+P)
+			break;
+		{
+			int dreg = REG(p);
+			char *dst = lreg[dreg];
+
+			print("\n\t;; Load %s\n", dst);
+			if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+				int off = (int)const_val(LEFT_CHILD(p));
+
+				offsethl(off + framesize + argstack);
+				print("\tLD\t%s,(HL)\n", dst);
+			} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+				char *addr = LEFT_VAL(p);
+
+				if(HARDWARE_REG(addr))
+					print("\tLDH\tA,(%s)\n", addr + HARDWARE_REG_LEN);
+				else
+					print("\tLD\tA,(%s)\n", addr);
+				print("\tLD\t%s,A\n", dst);
+			} else {
+				int sreg = LEFT_X_CHILD_REG(p);
+				char *src = intreg[sreg]->x.name;
+
+				print("\tLD\tA,(%s)\n", src);
+				print("\tLD\t%s,A\n", dst);
+			}
+			print("\n");
+			break;
+		}
+		case INDIR+I+sizeop(2):
+		case INDIR+U+sizeop(2):
+		case INDIR+P+sizeop(2):
+		if(p->kids[0]->op == VREG+P)
+			break;
+		{
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+
+			print("\n\t;; Load register %s\n", dst);
+			if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+				int off = (int)const_val(LEFT_CHILD(p));
+
+				offsethl(off + framesize + argstack);
+				print("\tLD\tA,(HL+)\n");
+				print("\tLD\t%s,(HL)\n", hreg[dreg]);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+			} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+				char *addr = LEFT_VAL(p);
+
+				print("\n\t;; Load %s\n", dst);
+				if(HARDWARE_REG(addr))
+					print("\tLDH\tA,(%s+1)\n", addr + HARDWARE_REG_LEN);
+				else
+					print("\tLD\tA,(%s+1)\n", addr);
+				print("\tLD\t%s,A\n", hreg[dreg]);
+				if(HARDWARE_REG(addr))
+					print("\tLDH\tA,(%s)\n", addr + HARDWARE_REG_LEN);
+				else
+					print("\tLD\tA,(%s)\n", addr);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+			} else {
+				int sreg = LEFT_X_CHILD_REG(p);
+
+				if(sreg != HL) {
+					print("\tLD\tH,%s\n", hreg[sreg]);
+					print("\tLD\tL,%s\n", lreg[sreg]);
+				}
+				print("\tLD\tA,(HL+)\n");
+				print("\tLD\t%s,(HL)\n", hreg[dreg]);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+			}
+			print("\n");
+			break;
+		}
+		case ASGN+I+sizeop(1):
+		case ASGN+U+sizeop(1):
+		if(p->kids[0]->op == VREG+P)
+			break;
+		{
+			if(p->kids[0] != NULL && p->kids[1] != NULL &&
+				(generic(p->kids[1]->op) == ADD ||
+				generic(p->kids[1]->op) == SUB ||
+				generic(p->kids[1]->op) == BAND ||
+				generic(p->kids[1]->op) == BOR ||
+				generic(p->kids[1]->op) == BXOR ||
+				generic(p->kids[1]->op) == BCOM ||
+				generic(p->kids[1]->op) == NEG ||
+				generic(p->kids[1]->op) == LSH ||
+				generic(p->kids[1]->op) == RSH) &&
+				p->kids[1]->kids[0] != NULL &&
+				generic(p->kids[1]->kids[0]->op) == INDIR &&
+				sametree(p->kids[0], p->kids[1]->kids[0]->kids[0])) {
+				Node q = p->kids[1];
+				int hw_reg = 0;
+				char load[128], store[128];
+
+				sprintf(load, "\tLD\tA,(HL)\n");
+				sprintf(store, "\tLD\t(HL),A\n");
+				if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+					int off = (int)const_val(LEFT_CHILD(p));
+
+					offsethl(off + framesize + argstack);
+				} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+					char *addr = LEFT_VAL(p);
+					if(HARDWARE_REG(addr)) {
+						hw_reg = 1;
+						sprintf(load, "\tLDH\tA,(%s)\n", addr + HARDWARE_REG_LEN);
+						sprintf(store, "\tLDH\t(%s),A\n", addr + HARDWARE_REG_LEN);
+					} else {
+						print("\tLD\tHL,#%s\n", addr);
+					}
+				} else {
+					int sreg = LEFT_REG(p);
+
+					print("\tLD\tH,%s\n", hreg[sreg]);
+					print("\tLD\tL,%s\n", lreg[sreg]);
+				}
+
+				switch(generic(q->op)) {
+				case ADD: {
+					if(IS_RIGHT_CONST(q)) {
+						int n;
+						char *val = RIGHT_VAL(q);
+
+						print("\n\t;; Add %s to (mem)\n", val);
+						n = (int)const_val(RIGHT_CHILD(q));
+						if(!hw_reg && (n == 0 || n == 1 || n == 2)) {
+							while(n--)
+								print("\tINC\t(HL)\n");
+						} else if(!hw_reg && (n == -1 || n == -2)) {
+							while(n++)
+								print("\tDEC\t(HL)\n");
+						} else {
+							print(load);
+							print("\tADD\t#<%s\n", val);
+							print(store);
+						}
+					} else {
+						int sreg = RIGHT_REG(q);
+
+						print("\n\t;; Add %s to (mem)\n", lreg[sreg]);
+						print(load);
+						print("\tADD\t%s\n", lreg[sreg]);
+						print(store);
+					}
+					print("\n");
+					break;
+				}
+				case SUB: {
+					if(IS_RIGHT_CONST(q)) {
+						int n;
+						char *val = RIGHT_VAL(q);
+
+						print("\n\t;; Substract %s from (mem)\n", val);
+						n = (int)const_val(RIGHT_CHILD(q));
+						if(!hw_reg && (n == 0 || n == 1 || n == 2)) {
+							while(n--)
+								print("\tDEC\t(HL)\n");
+						} else if(!hw_reg && (n == -1 || n == -2)) {
+							while(n++)
+								print("\tINC\t(HL)\n");
+						} else {
+							print(load);
+							print("\tSUB\t#<%s\n", val);
+							print(store);
+						}
+					} else {
+						int sreg = RIGHT_REG(q);
+
+						print("\n\t;; Substract %s from (mem)\n", lreg[sreg]);
+						print(load);
+						print("\tSUB\t%s\n", lreg[sreg]);
+						print(store);
+					}
+					print("\n");
+					break;
+				}
+				case BAND: {
+					if(IS_RIGHT_CONST(q)) {
+						char *val = RIGHT_VAL(q);
+
+						print("\n\t;; And %s and (mem)\n", val);
+						print(load);
+						print("\tAND\t#<%s\n", val);
+						print(store);
+					} else {
+						int sreg = RIGHT_REG(q);
+
+						print("\n\t;; And %s and (mem)\n", lreg[sreg]);
+						print(load);
+						print("\tAND\t%s\n", lreg[sreg]);
+						print(store);
+					}
+					print("\n");
+					break;
+				}
+				case BOR: {
+					if(IS_RIGHT_CONST(q)) {
+						char *val = RIGHT_VAL(q);
+
+						print("\n\t;; Or %s and (mem)\n", val);
+						print(load);
+						print("\tOR\t#<%s\n", val);
+						print(store);
+					} else {
+						int sreg = RIGHT_REG(q);
+
+						print("\n\t;; Or %s and (mem)\n", lreg[sreg]);
+						print(load);
+						print("\tOR\t%s\n", lreg[sreg]);
+						print(store);
+					}
+					print("\n");
+					break;
+				}
+				case BXOR: {
+					if(IS_RIGHT_CONST(q)) {
+						char *val = RIGHT_VAL(q);
+
+						print("\n\t;; Xor %s and (mem)\n", val);
+						print(load);
+						print("\tXOR\t#<%s\n", val);
+						print(store);
+					} else {
+						int sreg = RIGHT_REG(q);
+
+						print("\n\t;; Xor %s and (mem)\n", lreg[sreg]);
+						print(load);
+						print("\tXOR\t%s\n", lreg[sreg]);
+						print(store);
+					}
+					print("\n");
+					break;
+				}
+				case BCOM: {
+					print("\n\t;; Complement (mem)\n");
+					print(load);
+					print("\tCPL\n");
+					print(store);
+					print("\n");
+					break;
+				}
+				case NEG: {
+					print("\n\t;; Negate (mem)\n");
+					print(load);
+					print("\tCPL\n");
+					print("\tINC\tA\n");
+					print(store);
+					print("\n");
+					break;
+				}
+				case LSH: {
+					if(IS_RIGHT_CONST(q)) {
+						int n = (int)const_val(RIGHT_CHILD(q));
+
+						print("\n\t;; Left shift (mem) by %s\n", RIGHT_VAL(q));
+						if(hw_reg) {
+							print(load);
+							while(n-- > 0)
+								print("\tSLA\tA\n");
+							print(store);
+						} else {
+							while(n-- > 0)
+								print("\tSLA\t(HL)\n");
+						}
+					} else
+						assert(0);
+					print("\n");
+					break;
+				}
+				case RSH: {
+					if(IS_RIGHT_CONST(q)) {
+						int n = (int)const_val(RIGHT_CHILD(q));
+
+						print("\n\t;; Right shift (mem) by %s\n", RIGHT_VAL(q));
+						if(hw_reg) {
+							print(load);
+							while(n-- > 0)
+								if(optype(q->op) == I)
+									print("\tSRA\tA\n");
+								else
+									print("\tSRL\tA\n");
+							print(store);
+						} else {
+							while(n-- > 0)
+								if(optype(q->op) == I)
+									print("\tSRA\t(HL)\n");
+								else
+									print("\tSRL\t(HL)\n");
+						}
+					} else
+						assert(0);
+					print("\n");
+					break;
+				}
+				}
+			} else if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+				int off = (int)const_val(LEFT_CHILD(p));
+
+				if(IS_RIGHT_CONST(p)) {
+					char *val = RIGHT_VAL(p);
+
+					print("\n\t;; Store %s\n", val);
+					offsethl(off + framesize + argstack);
+					print("\tLD\t(HL),#<%s\n", val);
+				} else {
+					char *src = lreg[LEFT_X_CHILD_REG(p)];
+
+					print("\n\t;; Store %s\n", src);
+					offsethl(off + framesize + argstack);
+					print("\tLD\t(HL),%s\n", src);
+				}
+			} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+				char *addr = LEFT_VAL(p);
+
+				if(IS_RIGHT_CONST(p)) {
+					print("\n\t;; Store %s\n", RIGHT_VAL(p));
+					load_acc(const_val(RIGHT_CHILD(p)), LOW, 0);
+				} else {
+					char *src = lreg[LEFT_X_CHILD_REG(p)];
+
+					print("\n\t;; Store %s\n", src);
+					print("\tLD\tA,%s\n", src);
+				}
+				if(HARDWARE_REG(addr))
+					print("\tLDH\t(%s),A\n", addr + HARDWARE_REG_LEN);
+				else
+					print("\tLD\t(%s),A\n", addr);
+			} else {
+				int dreg = LEFT_X_CHILD_REG(p);
+				char *dst = intreg[dreg]->x.name;
+
+				if(IS_RIGHT_CONST(p)) {
+					print("\n\t;; Store %s\n", RIGHT_VAL(p));
+					load_acc(const_val(RIGHT_CHILD(p)), LOW, 0);
+					print("\tLD\t(%s),A\n", dst);
+				} else {
+					char *src = lreg[RIGHT_REG(p)];
+
+					print("\n\t;; Store %s\n", src);
+					print("\tLD\tA,%s\n", src);
+					print("\tLD\t(%s),A\n", dst);
+				}
+			}
+			print("\n");
+			break;
+		}
+		case ASGN+I+sizeop(2):
+		case ASGN+U+sizeop(2):
+		case ASGN+P+sizeop(2):
+		if(p->kids[0]->op == VREG+P)
+			break;
+		{
+			if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+				int off = (int)const_val(LEFT_CHILD(p));
+
+				if(IS_RIGHT_CONST(p)) {
+					char *val = RIGHT_VAL(p);
+
+					print("\n\t;; Store %s\n", val);
+					offsethl(off + framesize + argstack);
+					load_acc(const_val(RIGHT_CHILD(p)), LOW, 0);
+					print("\tLD\t(HL+),A\n");
+					print("\tLD\t(HL),#>%s\n", val);
+				} else if(IS_RIGHT_ADDRGP(p)) {
+					char *val = RIGHT_VAL(p);
+
+					print("\n\t;; Store %s\n", val);
+					offsethl(off + framesize + argstack);
+					print("\tPUSH\tBC\n");
+					print("\tLD\tBC,#%s\n", val);
+					print("\tLD\t(HL),C\n");
+					print("\tINC\tHL\n");
+					print("\tLD\t(HL),B\n");
+					print("\tPOP\tBC\n");
+				} else {
+					int sreg = RIGHT_REG(p);
+					char *src = intreg[sreg]->x.name;
+
+					print("\n\t;; Store %s\n", src);
+					offsethl(off + framesize + argstack);
+					print("\tLD\tA,%s\n", lreg[sreg]);
+					print("\tLD\t(HL+),A\n");
+					print("\tLD\t(HL),%s\n", hreg[sreg]);
+				}
+			} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+				char *addr = LEFT_VAL(p);
+
+				if(IS_RIGHT_CONST(p)) {
+					print("\n\t;; Store %s\n", RIGHT_VAL(p));
+					load_acc(const_val(RIGHT_CHILD(p)), LOW, 0);
+					if(HARDWARE_REG(addr))
+						print("\tLDH\t(%s),A\n", addr + HARDWARE_REG_LEN);
+					else
+						print("\tLD\t(%s),A\n", addr);
+					load_acc(const_val(RIGHT_CHILD(p)), HIGH, 1);
+					if(HARDWARE_REG(addr))
+						print("\tLDH\t(%s+1),A\n", addr + HARDWARE_REG_LEN);
+					else
+						print("\tLD\t(%s+1),A\n", addr);
+				} else if(IS_RIGHT_ADDRGP(p)) {
+					char *val = RIGHT_VAL(p);
+
+					print("\n\t;; Store %s\n", val);
+					print("\tLD\tHL,#%s\n", val);
+					print("\tLD\tA,H\n");
+					if(HARDWARE_REG(addr))
+						print("\tLDH\t(%s+1),A\n", addr + HARDWARE_REG_LEN);
+					else
+						print("\tLD\t(%s+1),A\n", addr);
+					print("\tLD\tA,L\n");
+					if(HARDWARE_REG(addr))
+						print("\tLDH\t(%s),A\n", addr + HARDWARE_REG_LEN);
+					else
+						print("\tLD\t(%s),A\n", addr);
+				} else {
+					int sreg = RIGHT_REG(p);
+					char *src = intreg[sreg]->x.name;
+
+					print("\n\t;; Store %s\n", src);
+					print("\tLD\tA,%s\n", hreg[sreg]);
+					if(HARDWARE_REG(addr))
+						print("\tLDH\t(%s+1),A\n", addr + HARDWARE_REG_LEN);
+					else
+						print("\tLD\t(%s+1),A\n", addr);
+					print("\tLD\tA,%s\n", lreg[sreg]);
+					if(HARDWARE_REG(addr))
+						print("\tLDH\t(%s),A\n", addr + HARDWARE_REG_LEN);
+					else
+						print("\tLD\t(%s),A\n", addr);
+				}
+			} else {
+				int dreg = LEFT_X_CHILD_REG(p);
+				char *dst = intreg[dreg]->x.name;
+
+				if(IS_RIGHT_CONST(p)) {
+					print("\n\t;; Store %s\n", RIGHT_VAL(p));
+					load_acc(const_val(RIGHT_CHILD(p)), LOW, 0);
+					print("\tLD\t(%s),A\n", dst);
+					print("\tINC\t%s\n", dst);
+					load_acc(const_val(RIGHT_CHILD(p)), HIGH, 1);
+					print("\tLD\t(%s),A\n", dst);
+				} else if(IS_RIGHT_ADDRGP(p)) {
+					char *val = RIGHT_VAL(p);
+
+					print("\n\t;; Store %s\n", val);
+					print("\tLD\tHL,#%s\n", val);
+					print("\tLD\tA,L\n");
+					print("\tLD\t(%s),A\n", dst);
+					print("\tINC\t%s\n", dst);
+					print("\tLD\tA,H\n");
+					print("\tLD\t(%s),A\n", dst);
+				} else {
+					int sreg = RIGHT_REG(p);
+
+					print("\n\t;; Store %s\n", intreg[sreg]->x.name);
+					print("\tLD\tA,%s\n", lreg[sreg]);
+					print("\tLD\t(%s),A\n", dst);
+					print("\tINC\t%s\n", dst);
+					print("\tLD\tA,%s\n", hreg[sreg]);
+					print("\tLD\t(%s),A\n", dst);
+				}
+			}
+			print("\n");
+			break;
+		}
+		case ASGN+B: {
+			int sreg = RIGHT_X_CHILD_REG(p);
+			char *src = intreg[sreg]->x.name;
+			int dreg = LEFT_X_CHILD_REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int size = p->syms[0]->u.c.v.i;
+
+			print("\n\t;; Assign structure from %s to %s\n", src, dst);
+			if(size > 4) {
+				while(size > 0) {
+					int lab = genlabel(1);
+
+					print("\tLD\tL,#%d\n", size > 0xFF ? 0 : size);
+					size -= (size > 0xFF ? 0x100 : size);
+					print(".L%d:\n", lab);
+					print("\tLD\tA,(%s)\n", src);
+					print("\tLD\t(%s),A\n", dst);
+					print("\tINC\t%s\n", src);
+					print("\tINC\t%s\n", dst);
+					print("\tDEC\tL\n");
+					print("\tJR\tNZ,.L%d\n", lab);
+				}
+			} else {
+				while(size) {
+					print("\tLD\tA,(%s)\n", src);
+					print("\tLD\t(%s),A\n", dst);
+					if(size > 1) {
+						print("\tINC\t%s\n", src);
+						print("\tINC\t%s\n", dst);
+					}
+					size--;
+				}
+			}
+			print("\n");
+			break;
+		}
+		case CALL+I+sizeop(1):
+		case CALL+U+sizeop(1):
+		case CALL+I+sizeop(2):
+		case CALL+U+sizeop(2):
+		case CALL+P+sizeop(2):
+		case CALL+V:
+		case CALL+B: {
+			int off = (int)const_val(p);
+
+			print("\tCALL\t%s\n", p->kids[0]->syms[0]->x.name);
+			offsetsp(off);
+			argstack -= off;
+			break;
+		}
+		case ARG+B: {
+			int lab = genlabel(1);
+			int sreg = LEFT_X_CHILD_REG(p);
+			char *src = intreg[sreg]->x.name;
+			int size = p->syms[0]->u.c.v.i;
+
+			argstack += size;
+
+			print("\n\t;; Pass structure parameter from %s\n", src);
+			offsetsp(-size);
+			offsethl(0);
+			if(size > 8)
+				printf("WARNING: passing a big struct as parameter generates much code\n");
+			while(size) {
+				print("\tLD\tA,(%s)\n", src);
+				print("\tLD\t(HL+),A\n");
+				if(size > 1) {
+					print("\tINC\t%s\n", src);
+				}
+				size--;
+			}
+			print("\n");
+			break;
+		}
+		case ARG+I+sizeop(1):
+		case ARG+U+sizeop(1):
+		{
+			print("\n\t;; 8-bit argument\n");
+			if(IS_LEFT_CONST(p))
+				load_acc(const_val(LEFT_CHILD(p)), LOW, 0);
+			else
+				print("\tLD\tA,%s\n", lreg[LEFT_X_CHILD_REG(p)]);
+			print("\tPUSH\tAF\n");
+			argstack++;
+			offsetsp(1);
+			break;
+		}
+		case ARG+I+sizeop(2):
+		case ARG+U+sizeop(2):
+		case ARG+P+sizeop(2): {
+			int sreg = LEFT_X_CHILD_REG(p);
+			char *src = intreg[sreg]->x.name;
+
+			argstack += 2;
+
+			print("\n\t;; 16-bit argument\n");
+			print("\tPUSH\t%s\n", src);
+			break;
+		}
+		case CVU+I+sizeop(2):
+		case CVU+U+sizeop(2):
+		case CVP+U+sizeop(2):
+		case CVU+P+sizeop(2): {
+			if(opsize(p->x.kids[0]->op) == 1) {
+				print("\n\t;; Convert unsigned 8-bit to 16-bit\n");
+				cvt_u8_16(REG(p), LEFT_X_CHILD_REG(p));
+			} else {
+				print("\n\t;; Convert unsigned 16-bit to 16-bit\n");
+				mv_16_16(REG(p), LEFT_X_CHILD_REG(p));
+			}
+			print("\n");
+			break;
+		}
+		case CVI+I+sizeop(2):
+		case CVI+U+sizeop(2): {
+			if(opsize(p->x.kids[0]->op) == 1) {
+				print("\n\t;; Convert signed 8-bit to 16-bit\n");
+				cvt_s8_16(REG(p), LEFT_X_CHILD_REG(p));
+			} else {
+				print("\n\t;; Convert signed 16-bit to 16-bit\n");
+				mv_16_16(REG(p), LEFT_X_CHILD_REG(p));
+			}
+			print("\n");
+			break;
+		}
+		case CVI+I+sizeop(1):
+		case CVU+I+sizeop(1):
+		case CVI+U+sizeop(1):
+		case CVU+U+sizeop(1): {
+			mv_8_8(REG(p), LEFT_X_CHILD_REG(p));
+			print("\n");
+			break;
+		}
+		case CNST+I+sizeop(1):
+		case CNST+U+sizeop(1): {
+			int dreg = REG(p);
+			char *val = VAL(p);
+
+			print("\n\t;; Load %s into %s\n", val, lreg[dreg]);
+			print("\tLD\t%s,#<%s\n", lreg[dreg], val);
+			print("\n");
+			break;
+		}
+		case CNST+I+sizeop(2):
+		case CNST+U+sizeop(2):
+		case CNST+P+sizeop(2):
+		case ADDRG+P+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			char *val = VAL(p);
+
+			print("\n\t;; Load %s into %s\n", val, dst);
+			print("\tLD\t%s,#%s\n", dst, val);
+			print("\n");
+			break;
+		}
+		case ADDRF+P+sizeop(2):
+		case ADDRL+P+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int off = (int)const_val(p);
+
+			print("\n\t;; Load local address into %s\n", dst);
+			offsethl(off + framesize + argstack);
+			print("\tLD\t%s,H\n", hreg[dreg]);
+			print("\tLD\t%s,L\n", lreg[dreg]);
+			print("\n");
+			break;
+		}
+		case LOAD+I+sizeop(1):
+		case LOAD+U+sizeop(1): {
+			int dreg = REG(p);
+
+			if(IS_LEFT_CONST(p)) {
+				char *val = LEFT_VAL(p);
+
+				print("\n\t;; Load %s into %s\n", val, lreg[dreg]);
+				print("\tLD\t%s,#<%s\n", lreg[dreg], val);
+			} else {
+				int sreg = LEFT_X_CHILD_REG(p);
+
+				if(dreg != sreg)
+					print("\tLD\t%s,%s\n", lreg[dreg], lreg[sreg]);
+			}
+			print("\n");
+			break;
+		}
+		case LOAD+I+sizeop(2):
+		case LOAD+U+sizeop(2):
+		case LOAD+P+sizeop(2): {
+			int dreg = REG(p);
+
+			if(IS_LEFT_CONST(p)) {
+				char *val = LEFT_VAL(p);
+
+				print("\n\t;; Load %s into %s\n", val, intreg[dreg]->x.name);
+				print("\tLD\t%s,#>%s\n", hreg[dreg], val);
+				print("\tLD\t%s,#<%s\n", lreg[dreg], val);
+			} else {
+				int sreg = LEFT_X_CHILD_REG(p);
+
+				if(dreg != sreg) {
+					print("\tLD\t%s,%s\n", hreg[dreg], hreg[sreg]);
+					print("\tLD\t%s,%s\n", lreg[dreg], lreg[sreg]);
+				}
+			}
+			print("\n");
+			break;
+		}
+		case ADD+I+sizeop(1):
+		case ADD+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+
+			if(IS_RIGHT_CONST(p)) {
+				int n;
+				char *val = RIGHT_VAL(p);
+
+				print("\n\t;; Add %s to %s into %s\n", val, lreg[sreg1], lreg[dreg]);
+				n = (int)const_val(RIGHT_CHILD(p));
+				if(n == 0 || n == 1 || n == 2) {
+					if(sreg1 != dreg)
+						print("\tLD\t%s,%s\n", lreg[dreg], lreg[sreg1]);
+					while(n--)
+						print("\tINC\t%s\n", lreg[dreg]);
+				} else if(n == -1 || n == -2) {
+					if(sreg1 != dreg)
+						print("\tLD\t%s,%s\n", lreg[dreg], lreg[sreg1]);
+					while(n++)
+						print("\tDEC\t%s\n", lreg[dreg]);
+				} else {
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tADD\t#<%s\n", val);
+					print("\tLD\t%s,A\n", lreg[dreg]);
+				}
+			} else {
+				int sreg2 = RIGHT_REG(p);
+
+				print("\n\t;; Add %s to %s into %s\n", lreg[sreg2], lreg[sreg1], lreg[dreg]);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tADD\t%s\n", lreg[sreg2]);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+			}
+			print("\n");
+			break;
+		}
+		case ADD+I+sizeop(2):
+		case ADD+U+sizeop(2):
+		case ADD+P+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			char *src1 = intreg[sreg1]->x.name;
+
+			if(opsize(p->x.kids[0]->op) == 1) {
+				if(optype(p->op) != P && optype(p->x.kids[0]->op) == I)
+					cvt_s8_16(sreg1, sreg1);
+				else
+					cvt_u8_16(sreg1, sreg1);
+			}
+			if(IS_RIGHT_CONST(p)) {
+				int n;
+				char *val = RIGHT_VAL(p);
+
+				print("\n\t;; Add %s to %s into %s\n", val, src1, dst);
+				n = (int)const_val(RIGHT_CHILD(p));
+				if(n == 0 || n == 1 || n == 2 || n == 3) {
+					if(sreg1 != dreg) {
+						print("\tLD\t%s,%s\n", hreg[dreg], hreg[sreg1]);
+						print("\tLD\t%s,%s\n", lreg[dreg], lreg[sreg1]);
+					}
+					while(n--)
+						print("\tINC\t%s\n", dst);
+				} else if(n == -1 || n == -2 || n == -3) {
+					if(sreg1 != dreg) {
+						print("\tLD\t%s,%s\n", hreg[dreg], hreg[sreg1]);
+						print("\tLD\t%s,%s\n", lreg[dreg], lreg[sreg1]);
+					}
+					while(n++)
+						print("\tDEC\t%s\n", dst);
+				} else {
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tADD\t#<%s\n", val);
+					print("\tLD\t%s,A\n", lreg[dreg]);
+					print("\tLD\tA,%s\n", hreg[sreg1]);
+					print("\tADC\t#>%s\n", val);
+					print("\tLD\t%s,A\n", hreg[dreg]);
+				}
+			} else if(IS_RIGHT_ADDRGP(p)) {
+				char *val = RIGHT_VAL(p);
+
+				print("\n\t;; Add %s to %s into %s\n", val, src1, dst);
+				print("\tLD\tHL,#%s\n", val);
+				print("\tADD\tHL,%s\n", src1);
+				print("\tLD\t%s,H\n", hreg[dreg]);
+				print("\tLD\t%s,L\n", lreg[dreg]);
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				char *src2 = intreg[sreg2]->x.name;
+
+				if(opsize(p->x.kids[1]->op) == 1) {
+					if(optype(p->op) != P && optype(p->x.kids[1]->op) == I)
+						cvt_s8_16(sreg2, sreg2);
+					else
+						cvt_u8_16(sreg2, sreg2);
+				}
+				print("\n\t;; Add %s to %s into %s\n", src2, src1, dst);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tADD\t%s\n", lreg[sreg2]);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+				print("\tLD\tA,%s\n", hreg[sreg1]);
+				print("\tADC\t%s\n", hreg[sreg2]);
+				print("\tLD\t%s,A\n", hreg[dreg]);
+			}
+			print("\n");
+			break;
+		}
+		case SUB+I+sizeop(1):
+		case SUB+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+
+			if(IS_RIGHT_CONST(p)) {
+				int n;
+				char *val = RIGHT_VAL(p);
+
+				print("\n\t;; Substract %s from %s into %s\n", val, lreg[sreg1], lreg[dreg]);
+				n = (int)const_val(RIGHT_CHILD(p));
+				if(n == 0 || n == 1 || n == 2) {
+					if(sreg1 != dreg)
+						print("\tLD\t%s,%s\n", lreg[dreg], lreg[sreg1]);
+					while(n--)
+						print("\tDEC\t%s\n", lreg[dreg]);
+				} else if(n == -1 || n == -2) {
+					if(sreg1 != dreg)
+						print("\tLD\t%s,%s\n", lreg[dreg], lreg[sreg1]);
+					while(n++)
+						print("\tINC\t%s\n", lreg[dreg]);
+				} else {
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tSUB\t#<%s\n", val);
+					print("\tLD\t%s,A\n", lreg[dreg]);
+				}
+			} else {
+				int sreg2 = RIGHT_REG(p);
+
+				print("\n\t;; Substract %s from %s into %s\n", lreg[sreg2], lreg[sreg1], lreg[dreg]);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tSUB\t%s\n", lreg[sreg2]);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+			}
+			print("\n");
+			break;
+		}
+		case SUB+I+sizeop(2):
+		case SUB+U+sizeop(2):
+		case SUB+P+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			char *src1 = intreg[sreg1]->x.name;
+
+			if(opsize(p->x.kids[0]->op) == 1) {
+				if(optype(p->op) != P && optype(p->x.kids[0]->op) == I)
+					cvt_s8_16(sreg1, sreg1);
+				else
+					cvt_u8_16(sreg1, sreg1);
+			}
+			if(IS_RIGHT_CONST(p)) {
+				int n;
+				char *val = RIGHT_VAL(p);
+
+				print("\n\t;; Substract %s from %s into %s\n", val, src1, dst);
+				n = (int)const_val(RIGHT_CHILD(p));
+				if(n == 0 || n == 1 || n == 2 || n == 3) {
+					if(sreg1 != dreg) {
+						print("\tLD\t%s,%s\n", hreg[dreg], hreg[sreg1]);
+						print("\tLD\t%s,%s\n", lreg[dreg], lreg[sreg1]);
+					}
+					while(n--)
+						print("\tDEC\t%s\n", dst);
+				} else if(n == -1 || n == -2 || n == -3) {
+					if(sreg1 != dreg) {
+						print("\tLD\t%s,%s\n", hreg[dreg], hreg[sreg1]);
+						print("\tLD\t%s,%s\n", lreg[dreg], lreg[sreg1]);
+					}
+					while(n--)
+						print("\tINC\t%s\n", dst);
+				} else {
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tSUB\t#<%s\n", val);
+					print("\tLD\t%s,A\n", lreg[dreg]);
+					print("\tLD\tA,%s\n", hreg[sreg1]);
+					print("\tSBC\t#>%s\n", val);
+					print("\tLD\t%s,A\n", hreg[dreg]);
+				}
+			} else if(IS_RIGHT_ADDRGP(p)) {
+				char *val = RIGHT_VAL(p);
+
+				print("\n\t;; Substract %s from %s into %s\n", val, src1, dst);
+				print("\tLD\tHL,#%s\n", val);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tSUB\tL\n");
+				print("\tLD\t%s,A\n", lreg[dreg]);
+				print("\tLD\tA,%s\n", hreg[sreg1]);
+				print("\tSBC\tH\n");
+				print("\tLD\t%s,A\n", hreg[dreg]);
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				char *src2 = intreg[sreg2]->x.name;
+
+				if(opsize(p->x.kids[1]->op) == 1) {
+					if(optype(p->op) != P && optype(p->x.kids[1]->op) == I)
+						cvt_s8_16(sreg2, sreg2);
+					else
+						cvt_u8_16(sreg2, sreg2);
+				}
+				print("\n\t;; Substract %s from %s into %s\n", src2, src1, dst);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tSUB\t%s\n", lreg[sreg2]);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+				print("\tLD\tA,%s\n", hreg[sreg1]);
+				print("\tSBC\t%s\n", hreg[sreg2]);
+				print("\tLD\t%s,A\n", hreg[dreg]);
+			}
+			print("\n");
+			break;
+		}
+		case BAND+I+sizeop(1): 
+		case BAND+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+
+				print("\n\t;; And %s and %s into %s\n", lreg[sreg1], val, lreg[dreg]);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tAND\t#<%s\n", val);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				char *src2 = intreg[sreg2]->x.name;
+				
+				print("\n\t;; And %s and %s into %s\n", lreg[sreg1], lreg[sreg2], lreg[dreg]);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tAND\t%s\n", lreg[sreg2]);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+			}
+			print("\n");
+			break;
+		}
+		case BAND+I+sizeop(2): 
+		case BAND+U+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			char *src1 = intreg[sreg1]->x.name;
+
+			if(opsize(p->x.kids[0]->op) == 1) {
+				if(optype(p->x.kids[0]->op) == I)
+					cvt_s8_16(sreg1, sreg1);
+				else
+					cvt_u8_16(sreg1, sreg1);
+			}
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+
+				print("\n\t;; And %s and %s into %s\n", src1, val, dst);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tAND\t#<%s\n", val);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+				print("\tLD\tA,%s\n", hreg[sreg1]);
+				print("\tAND\t#>%s\n", val);
+				print("\tLD\t%s,A\n", hreg[dreg]);
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				char *src2 = intreg[sreg2]->x.name;
+				
+				if(opsize(p->x.kids[1]->op) == 1) {
+					if(optype(p->x.kids[1]->op) == I)
+						cvt_s8_16(sreg2, sreg2);
+					else
+						cvt_u8_16(sreg2, sreg2);
+				}
+				print("\n\t;; And %s and %s into %s\n", src1, src2, dst);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tAND\t%s\n", lreg[sreg2]);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+				print("\tLD\tA,%s\n", hreg[sreg1]);
+				print("\tAND\t%s\n", hreg[sreg2]);
+				print("\tLD\t%s,A\n", hreg[dreg]);
+			}
+			print("\n");
+			break;
+		}
+		case BOR+I+sizeop(1): 
+		case BOR+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+
+				print("\n\t;; Or %s and %s into %s\n", lreg[sreg1], val, lreg[dreg]);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tOR\t#<%s\n", val);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				
+				print("\n\t;; Or %s and %s into %s\n", lreg[sreg1], lreg[sreg2], lreg[dreg]);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tOR\t%s\n", lreg[sreg2]);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+			}
+			print("\n");
+			break;
+		}
+		case BOR+I+sizeop(2): 
+		case BOR+U+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			char *src1 = intreg[sreg1]->x.name;
+
+			if(opsize(p->x.kids[0]->op) == 1) {
+				if(optype(p->x.kids[0]->op) == I)
+					cvt_s8_16(sreg1, sreg1);
+				else
+					cvt_u8_16(sreg1, sreg1);
+			}
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+
+				print("\n\t;; Or %s and %s into %s\n", src1, val, dst);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tOR\t#<%s\n", val);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+				print("\tLD\tA,%s\n", hreg[sreg1]);
+				print("\tOR\t#>%s\n", val);
+				print("\tLD\t%s,A\n", hreg[dreg]);
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				char *src2 = intreg[sreg2]->x.name;
+				
+				if(opsize(p->x.kids[1]->op) == 1) {
+					if(optype(p->x.kids[1]->op) == I)
+						cvt_s8_16(sreg2, sreg2);
+					else
+						cvt_u8_16(sreg2, sreg2);
+				}
+				print("\n\t;; Or %s and %s into %s\n", src1, src2, dst);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tOR\t%s\n", lreg[sreg2]);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+				print("\tLD\tA,%s\n", hreg[sreg1]);
+				print("\tOR\t%s\n", hreg[sreg2]);
+				print("\tLD\t%s,A\n", hreg[dreg]);
+			}
+			print("\n");
+			break;
+		}
+		case BXOR+I+sizeop(1): 
+		case BXOR+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+
+				print("\n\t;; Xor %s and %s into %s\n", lreg[sreg1], val, lreg[dreg]);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tXOR\t#<%s\n", val);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				
+				print("\n\t;; Xor %s and %s into %s\n", lreg[sreg1], lreg[sreg2], lreg[dreg]);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tXOR\t%s\n", lreg[sreg2]);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+			}
+			print("\n");
+			break;
+		}
+		case BXOR+I+sizeop(2): 
+		case BXOR+U+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			char *src1 = intreg[sreg1]->x.name;
+
+			if(opsize(p->x.kids[0]->op) == 1) {
+				if(optype(p->x.kids[0]->op) == I)
+					cvt_s8_16(sreg1, sreg1);
+				else
+					cvt_u8_16(sreg1, sreg1);
+			}
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+
+				print("\n\t;; Xor %s and %s into %s\n", src1, val, dst);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tXOR\t#<%s\n", val);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+				print("\tLD\tA,%s\n", hreg[sreg1]);
+				print("\tXOR\t#>%s\n", val);
+				print("\tLD\t%s,A\n", hreg[dreg]);
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				char *src2 = intreg[sreg2]->x.name;
+				
+				if(opsize(p->x.kids[1]->op) == 1) {
+					if(optype(p->x.kids[1]->op) == I)
+						cvt_s8_16(sreg2, sreg2);
+					else
+						cvt_u8_16(sreg2, sreg2);
+				}
+				print("\n\t;; Xor %s and %s into %s\n", src1, src2, dst);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tXOR\t%s\n", lreg[sreg2]);
+				print("\tLD\t%s,A\n", lreg[dreg]);
+				print("\tLD\tA,%s\n", hreg[sreg1]);
+				print("\tXOR\t%s\n", hreg[sreg2]);
+				print("\tLD\t%s,A\n", hreg[dreg]);
+			}			print("\n");
+			break;
+		}
+		case BCOM+I+sizeop(1): 
+		case BCOM+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg = LEFT_X_CHILD_REG(p);
+
+			print("\n\t;; Complement %s into %s\n", lreg[sreg], lreg[dreg]);
+			print("\tLD\tA,%s\n", lreg[sreg]);
+			print("\tCPL\n");
+			print("\tLD\t%s,A\n", lreg[dreg]);
+			print("\n");
+			break;
+		}
+		case BCOM+I+sizeop(2): 
+		case BCOM+U+sizeop(2): {
+			int dreg = REG(p);
+			int sreg = LEFT_X_CHILD_REG(p);
+
+			print("\n\t;; Complement %s into %s\n", intreg[sreg]->x.name,
+				 intreg[dreg]->x.name);
+			print("\tLD\tA,%s\n", lreg[sreg]);
+			print("\tCPL\n");
+			print("\tLD\t%s,A\n", lreg[dreg]);
+			print("\tLD\tA,%s\n", hreg[sreg]);
+			print("\tCPL\n");
+			print("\tLD\t%s,A\n", hreg[dreg]);
+			print("\n");
+			break;
+		}
+		case NEG+I+sizeop(1): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int sreg = LEFT_X_CHILD_REG(p);
+
+			print("\n\t;; Negate %s into %s\n", lreg[sreg], lreg[dreg]);
+			print("\tXOR\tA\n");
+			print("\tSUB\t%s\n", lreg[sreg]);
+			print("\tLD\t%s,A\n", lreg[dreg]);
+			print("\n");
+			break;
+		}
+		case NEG+I+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int sreg = LEFT_X_CHILD_REG(p);
+
+			print("\n\t;; Negate %s into %s\n", intreg[sreg]->x.name,
+				 intreg[dreg]->x.name);
+			print("\tXOR\tA\n");
+			print("\tSUB\t%s\n", lreg[sreg]);
+			print("\tLD\t%s,A\n", lreg[dreg]);
+			/* LD does not change the flags! */
+			print("\tLD\tA,#0\n");
+			print("\tSBC\t%s\n", hreg[sreg]);
+			print("\tLD\t%s,A\n", hreg[dreg]);
+			print("\n");
+			break;
+		}
+		case EQ+I+sizeop(1):
+		case EQ+U+sizeop(1): {
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			char *jmp = p->syms[0]->x.name;
+
+			if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_ADDRFP(p->kids[1]) || IS_LEFT_ADDRLP(p->kids[1]))) {
+				int off = (int)const_val(LEFT_CHILD(p->kids[1]));
+
+				print("\n\t;; Compare EQ %s and (mem)\n", lreg[sreg1]);
+				offsethl(off + framesize + argstack);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tCP\t(HL)\n");
+			} else if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_CONST(p->kids[1]) || IS_LEFT_ADDRGP(p->kids[1]))) {
+				char *addr = LEFT_VAL(p->kids[1]);
+
+				print("\n\t;; Compare EQ %s and (mem)\n", lreg[sreg1]);
+				print("\tLD\tA,(%s)\n", addr);
+				print("\tCP\t%s\n", lreg[sreg1]);
+			} else if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+
+				print("\n\t;; Compare EQ %s and %s\n", lreg[sreg1], val);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tCP\t#<%s\n", val);
+			} else {
+				int sreg2 = RIGHT_REG(p);
+
+				if(IS_RIGHT_INDIR(p)) {
+					print("\n\t;; Compare EQ %s and (mem)\n", lreg[sreg1]);
+					print("\tLD\tA,(%s)\n", intreg[sreg2]->x.name);
+					print("\tCP\t%s\n", lreg[sreg1]);
+				} else {
+					print("\n\t;; Compare EQ %s and %s\n", lreg[sreg1], lreg[sreg2]);
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tCP\t%s\n", lreg[sreg2]);
+				}
+			}
+			print("\tJP\tZ,%s\n", jmp);
+			print("\n");
+			break;
+		}
+		case EQ+I+sizeop(2):
+		case EQ+U+sizeop(2): {
+			int lab = genlabel(1);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			int sreg2;
+			char *val;
+			char *jmp = p->syms[0]->x.name;
+			int cnst = IS_RIGHT_CONST(p);
+
+			if(opsize(p->x.kids[0]->op) == 1) {
+				if(optype(p->x.kids[0]->op) == I)
+					cvt_s8_16(sreg1, sreg1);
+				else
+					cvt_u8_16(sreg1, sreg1);
+			}
+			if(cnst) {
+				val = RIGHT_VAL(p);
+				print("\n\t;; Compare EQ %s and %s\n", intreg[sreg1]->x.name,
+					val);
+			} else {
+				sreg2 = RIGHT_REG(p);
+				if(opsize(p->x.kids[1]->op) == 1) {
+					if(optype(p->x.kids[1]->op) == I)
+						cvt_s8_16(sreg2, sreg2);
+					else
+						cvt_u8_16(sreg2, sreg2);
+				}
+				print("\n\t;; Compare EQ %s and %s\n", intreg[sreg1]->x.name,
+					intreg[sreg2]->x.name);
+			}
+			print("\tLD\tA,%s\n", lreg[sreg1]);
+			if(cnst)
+				print("\tCP\t#<%s\n", val);
+			else
+				print("\tCP\t%s\n", lreg[sreg2]);
+			print("\tJR\tNZ,.L%d\n", lab);
+			print("\tLD\tA,%s\n", hreg[sreg1]);
+			if(cnst)
+				print("\tCP\t#>%s\n", val);
+			else
+				print("\tCP\t%s\n", hreg[sreg2]);
+			print("\tJP\tZ,%s\n", jmp);
+			print(".L%d:\n", lab);
+			print("\n");
+			break;
+		}
+		case GE+I+sizeop(1):
+		case GE+U+sizeop(1): {
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			char *jmp = p->syms[0]->x.name;
+
+			if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_ADDRFP(p->kids[1]) || IS_LEFT_ADDRLP(p->kids[1]))) {
+				int off = (int)const_val(LEFT_CHILD(p->kids[1]));
+
+				print("\n\t;; Compare GE %s and (mem)\n", lreg[sreg1]);
+				offsethl(off + framesize + argstack);
+				if(optype(p->op) == I) {
+					print("\tLD\tA,(HL)\n");
+					print("\tADD\t#0x80\n");
+					print("\tLD\tL,A\n");
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tCP\tL\n");
+				} else {
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tCP\t(HL)\n");
+				}
+			} else if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_CONST(p->kids[1]) || IS_LEFT_ADDRGP(p->kids[1]))) {
+				char *addr = LEFT_VAL(p->kids[1]);
+
+				print("\n\t;; Compare GE %s and (mem)\n", lreg[sreg1]);
+				if(optype(p->op) == I) {
+					print("\tLD\tA,(#%s)\n", addr);
+					print("\tADD\t#0x80\n");
+					print("\tLD\tL,A\n");
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tCP\tL\n");
+				} else {
+					print("\tLD\tA,(%s)\n", addr);
+					print("\tCP\t(HL)\n");
+				}
+			} else if(IS_RIGHT_CONST(p)) {
+				int i = (int)const_val(RIGHT_CHILD(p));
+
+				print("\n\t;; Compare GE %s and %s\n", lreg[sreg1], RIGHT_VAL(p));
+				if(optype(p->op) == I) {
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tCP\t#%d\n", i^0x80);
+				} else {
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tCP\t#%d\n", i);
+				}
+			} else {
+				int sreg2 = RIGHT_REG(p);
+
+				if(IS_RIGHT_INDIR(p)) {
+					print("\n\t;; Compare GE %s and (mem)\n", lreg[sreg1]);
+					if(optype(p->op) == I) {
+						print("\tLD\tA,(%s)\n", intreg[sreg2]->x.name);
+						print("\tADD\t#0x80\n");
+						print("\tLD\tL,A\n");
+						print("\tLD\tA,%s\n", lreg[sreg1]);
+						print("\tADD\t#0x80\n");
+						print("\tCP\tL\n");
+					} else {
+						print("\tLD\tA,%s\n", lreg[sreg1]);
+						print("\tLD\tH,%s\n", hreg[sreg2]);
+						print("\tLD\tL,%s\n", lreg[sreg2]);
+						print("\tCP\t(HL)\n");
+					}
+				} else {
+					print("\n\t;; Compare GE %s and %s\n", lreg[sreg1], lreg[sreg2]);
+					if(optype(p->op) == I) {
+						print("\tLD\tA,%s\n", lreg[sreg2]);
+						print("\tADD\t#0x80\n");
+						print("\tLD\tL,A\n");
+						print("\tLD\tA,%s\n", lreg[sreg1]);
+						print("\tADD\t#0x80\n");
+						print("\tCP\tL\n");
+					} else {
+						print("\tLD\tA,%s\n", lreg[sreg1]);
+						print("\tCP\t%s\n", lreg[sreg2]);
+					}
+				}
+			}
+			print("\tJP\tNC,%s\n", jmp);
+			print("\n");
+			break;
+		}
+		case GE+I+sizeop(2):
+		case GE+U+sizeop(2): {
+			int lab = genlabel(1);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			int sreg2;
+			char *val;
+			long n;
+			char *jmp = p->syms[0]->x.name;
+			char *src1 = intreg[sreg1]->x.name;
+			int cnst = IS_RIGHT_CONST(p);
+
+			if(opsize(p->x.kids[0]->op) == 1) {
+				if(optype(p->x.kids[0]->op) == I)
+					cvt_s8_16(sreg1, sreg1);
+				else
+					cvt_u8_16(sreg1, sreg1);
+			}
+			if(cnst) {
+				val = RIGHT_VAL(p);
+				n = const_val(RIGHT_CHILD(p));
+				print("\n\t;; Compare GE %s and %s\n", intreg[sreg1]->x.name,
+					val);
+			} else {
+				sreg2 = RIGHT_REG(p);
+				if(opsize(p->x.kids[1]->op) == 1) {
+					if(optype(p->x.kids[1]->op) == I)
+						cvt_s8_16(sreg2, sreg2);
+					else
+						cvt_u8_16(sreg2, sreg2);
+				}
+				print("\n\t;; Compare GE %s and %s\n", intreg[sreg1]->x.name,
+					intreg[sreg2]->x.name);
+			}
+			if(cnst) {
+				if(optype(p->op) == I) {
+					print("\tLD\tA,%s\n", hreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tCP\t#%d\n", ((n>>8)&0xFF)^0x80);
+				} else {
+					print("\tLD\tA,%s\n", hreg[sreg1]);
+					print("\tCP\t#%d\n", (n>>8)&0xFF);
+				}
+			} else {
+				if(optype(p->op) == I) {
+					print("\tLD\tA,%s\n", hreg[sreg2]);
+					print("\tADD\t#0x80\n");
+					print("\tLD\tL,A\n");
+					print("\tLD\tA,%s\n", hreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tCP\tL\n");
+				} else {
+					print("\tLD\tA,%s\n", hreg[sreg1]);
+					print("\tCP\t%s\n", hreg[sreg2]);
+				}
+			}
+			print("\tJR\tNZ,.L%d\n", lab);
+			print("\tLD\tA,%s\n", lreg[sreg1]);
+			if(cnst)
+				print("\tCP\t#%d\n", n&0xFF);
+			else
+				print("\tCP\t%s\n", lreg[sreg2]);
+			print(".L%d:\n", lab);
+			print("\tJP\tNC,%s\n", jmp);
+			print("\n");
+			break;
+		}
+		case LE+I+sizeop(1):
+		case LE+U+sizeop(1): {
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			char *jmp = p->syms[0]->x.name;
+			int cnst = IS_RIGHT_CONST(p);
+
+			if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_ADDRFP(p->kids[1]) || IS_LEFT_ADDRLP(p->kids[1]))) {
+				int off = (int)const_val(LEFT_CHILD(p->kids[1]));
+
+				print("\n\t;; Compare LE %s and (mem)\n", lreg[sreg1]);
+				offsethl(off + framesize + argstack);
+				if(optype(p->op) == I) {
+					print("\tLD\tA,(HL)\n");
+					print("\tADD\t#0x80\n");
+					print("\tLD\tH,A\n");
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tLD\tL,A\n");
+					print("\tLD\tA,H\n");
+					print("\tCP\tL\n");
+				} else {
+					print("\tLD\tA,(HL)\n");
+					print("\tCP\t%s\n", lreg[sreg1]);
+				}
+			} else if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_CONST(p->kids[1]) || IS_LEFT_ADDRGP(p->kids[1]))) {
+				char *addr = LEFT_VAL(p->kids[1]);
+
+				print("\n\t;; Compare LE %s and (mem)\n", lreg[sreg1]);
+				if(optype(p->op) == I) {
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tLD\tL,A\n");
+					print("\tLD\tA,(%s)\n", addr);
+					print("\tADD\t#0x80\n");
+					print("\tCP\tL\n");
+				} else {
+					print("\tLD\tA,(%s)\n", addr);
+					print("\tCP\t%s\n", lreg[sreg1]);
+				}
+			} else if(IS_RIGHT_CONST(p)) {
+				int i = (int)const_val(RIGHT_CHILD(p));
+
+				print("\n\t;; Compare LE %s and %s\n", lreg[sreg1], RIGHT_VAL(p));
+				if(optype(p->op) == I) {
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tLD\tL,A\n");
+					load_acc(const_val(RIGHT_CHILD(p))^0x80, LOW, 0);
+					print("\tCP\tL\n");
+				} else {
+					load_acc(const_val(RIGHT_CHILD(p)), LOW, 0);
+					print("\tCP\t%s\n", lreg[sreg1]);
+				}
+			} else {
+				int sreg2 = RIGHT_REG(p);
+
+				if(IS_RIGHT_INDIR(p)) {
+					print("\n\t;; Compare LE %s and (mem)\n", lreg[sreg1]);
+					if(optype(p->op) == I) {
+						print("\tLD\tA,(%s)\n", intreg[sreg2]->x.name);
+						print("\tADD\t#0x80\n");
+						print("\tLD\tH,A\n");
+						print("\tLD\tA,%s\n", lreg[sreg1]);
+						print("\tADD\t#0x80\n");
+						print("\tLD\tL,A\n");
+						print("\tLD\tA,H\n");
+						print("\tCP\tL\n");
+					} else {
+						print("\tLD\tA,(%s)\n", intreg[sreg2]->x.name);
+						print("\tCP\t%s\n", lreg[sreg1]);
+					}
+				} else {
+					print("\n\t;; Compare LE %s and %s\n", lreg[sreg1], lreg[sreg2]);
+					if(optype(p->op) == I) {
+						print("\tLD\tA,%s\n", lreg[sreg1]);
+						print("\tADD\t#0x80\n");
+						print("\tLD\tL,A\n");
+						print("\tLD\tA,%s\n", lreg[sreg2]);
+						print("\tADD\t#0x80\n");
+						print("\tCP\tL\n");
+					} else {
+						print("\tLD\tA,%s\n", lreg[sreg2]);
+						print("\tCP\t%s\n", lreg[sreg1]);
+					}
+				}
+			}
+			print("\tJP\tNC,%s\n", jmp);
+			print("\n");
+			break;
+		}
+		case LE+I+sizeop(2):
+		case LE+U+sizeop(2): {
+			int lab = genlabel(1);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			int sreg2;
+			char *val;
+			long n;
+			char *jmp = p->syms[0]->x.name;
+			char *src1 = intreg[sreg1]->x.name;
+			int cnst = IS_RIGHT_CONST(p);
+
+			if(opsize(p->x.kids[0]->op) == 1) {
+				if(optype(p->x.kids[0]->op) == I)
+					cvt_s8_16(sreg1, sreg1);
+				else
+					cvt_u8_16(sreg1, sreg1);
+			}
+			if(cnst) {
+				val = RIGHT_VAL(p);
+				n = const_val(RIGHT_CHILD(p));
+				print("\n\t;; Compare LE %s and %s\n", intreg[sreg1]->x.name,
+					val);
+			} else {
+				sreg2 = RIGHT_REG(p);
+				if(opsize(p->x.kids[1]->op) == 1) {
+					if(optype(p->x.kids[1]->op) == I)
+						cvt_s8_16(sreg2, sreg2);
+					else
+						cvt_u8_16(sreg2, sreg2);
+				}
+				print("\n\t;; Compare LE %s and %s\n", intreg[sreg1]->x.name,
+					intreg[sreg2]->x.name);
+			}
+			if(cnst) {
+				if(optype(p->op) == I) {
+					print("\tLD\tA,%s\n", hreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tLD\tL,A\n");
+					print("\tLD\tA,#%d\n", ((n>>8)&0xFF)^0x80);
+					print("\tCP\tL\n");
+				} else {
+					print("\tLD\tA,#%d\n", (n>>8)&0xFF);
+					print("\tCP\t%s\n", hreg[sreg1]);
+				}
+			} else {
+				if(optype(p->op) == I) {
+					print("\tLD\tA,%s\n", hreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tLD\tL,A\n");
+					print("\tLD\tA,%s\n", hreg[sreg2]);
+					print("\tADD\t#0x80\n");
+					print("\tCP\tL\n");
+				} else {
+					print("\tLD\tA,%s\n", hreg[sreg2]);
+					print("\tCP\t%s\n", hreg[sreg1]);
+				}
+			}
+			print("\tJR\tNZ,.L%d\n", lab);
+			if(cnst)
+				print("\tLD\tA,#%d\n", n&0xFF);
+			else
+				print("\tLD\tA,%s\n", lreg[sreg2]);
+			print("\tSUB\t%s\n", lreg[sreg1]);
+			print(".L%d:\n", lab);
+			print("\tJP\tNC,%s\n", jmp);
+			print("\n");
+			break;
+		}
+		case GT+I+sizeop(1):
+		case GT+U+sizeop(1): {
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			char *jmp = p->syms[0]->x.name;
+			int cnst = IS_RIGHT_CONST(p);
+
+			if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_ADDRFP(p->kids[1]) || IS_LEFT_ADDRLP(p->kids[1]))) {
+				int off = (int)const_val(LEFT_CHILD(p->kids[1]));
+
+				print("\n\t;; Compare LE %s and (mem)\n", lreg[sreg1]);
+				offsethl(off + framesize + argstack);
+				if(optype(p->op) == I) {
+					print("\tLD\tA,(HL)\n");
+					print("\tADD\t#0x80\n");
+					print("\tLD\tH,A\n");
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tLD\tL,A\n");
+					print("\tLD\tA,H\n");
+					print("\tCP\tL\n");
+				} else {
+					print("\tLD\tA,(HL)\n");
+					print("\tCP\t%s\n", lreg[sreg1]);
+				}
+			} else if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_CONST(p->kids[1]) || IS_LEFT_ADDRGP(p->kids[1]))) {
+				char *addr = LEFT_VAL(p->kids[1]);
+
+				print("\n\t;; Compare LE %s and (mem)\n", lreg[sreg1]);
+				if(optype(p->op) == I) {
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tLD\tL,A\n");
+					print("\tLD\tA,(%s)\n", addr);
+					print("\tADD\t#0x80\n");
+					print("\tCP\tL\n");
+				} else {
+					print("\tLD\tA,(%s)\n", addr);
+					print("\tCP\t%s\n", lreg[sreg1]);
+				}
+			} else if(IS_RIGHT_CONST(p)) {
+				int i = (int)const_val(RIGHT_CHILD(p));
+
+				print("\n\t;; Compare LE %s and %s\n", lreg[sreg1], RIGHT_VAL(p));
+				if(optype(p->op) == I) {
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tLD\tL,A\n");
+					load_acc(const_val(RIGHT_CHILD(p))^0x80, LOW, 0);
+					print("\tCP\tL\n");
+				} else {
+					load_acc(const_val(RIGHT_CHILD(p)), LOW, 0);
+					print("\tCP\t%s\n", lreg[sreg1]);
+				}
+			} else {
+				int sreg2 = RIGHT_REG(p);
+
+				if(IS_RIGHT_INDIR(p)) {
+					print("\n\t;; Compare LE %s and (mem)\n", lreg[sreg1]);
+					if(optype(p->op) == I) {
+						print("\tLD\tA,(%s)\n", intreg[sreg2]->x.name);
+						print("\tADD\t#0x80\n");
+						print("\tLD\tH,A\n");
+						print("\tLD\tA,%s\n", lreg[sreg1]);
+						print("\tADD\t#0x80\n");
+						print("\tLD\tL,A\n");
+						print("\tLD\tA,H\n");
+						print("\tCP\tL\n");
+					} else {
+						print("\tLD\tA,(%s)\n", intreg[sreg2]->x.name);
+						print("\tCP\t%s\n", lreg[sreg1]);
+					}
+				} else {
+					print("\n\t;; Compare LE %s and %s\n", lreg[sreg1], lreg[sreg2]);
+					if(optype(p->op) == I) {
+						print("\tLD\tA,%s\n", lreg[sreg1]);
+						print("\tADD\t#0x80\n");
+						print("\tLD\tL,A\n");
+						print("\tLD\tA,%s\n", lreg[sreg2]);
+						print("\tADD\t#0x80\n");
+						print("\tCP\tL\n");
+					} else {
+						print("\tLD\tA,%s\n", lreg[sreg2]);
+						print("\tCP\t%s\n", lreg[sreg1]);
+					}
+				}
+			}
+			print("\tJP\tC,%s\n", jmp);
+			print("\n");
+			break;
+		}
+		case GT+I+sizeop(2):
+		case GT+U+sizeop(2): {
+			int lab = genlabel(1);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			int sreg2;
+			char *val;
+			long n;
+			char *jmp = p->syms[0]->x.name;
+			int cnst = IS_RIGHT_CONST(p);
+
+			if(opsize(p->x.kids[0]->op) == 1) {
+				if(optype(p->x.kids[0]->op) == I)
+					cvt_s8_16(sreg1, sreg1);
+				else
+					cvt_u8_16(sreg1, sreg1);
+			}
+			if(cnst) {
+				val = RIGHT_VAL(p);
+				n = const_val(RIGHT_CHILD(p));
+				print("\n\t;; Compare LE %s and %s\n", intreg[sreg1]->x.name,
+					val);
+			} else {
+				sreg2 = RIGHT_REG(p);
+				if(opsize(p->x.kids[1]->op) == 1) {
+					if(optype(p->x.kids[1]->op) == I)
+						cvt_s8_16(sreg2, sreg2);
+					else
+						cvt_u8_16(sreg2, sreg2);
+				}
+				print("\n\t;; Compare LE %s and %s\n", intreg[sreg1]->x.name,
+					intreg[sreg2]->x.name);
+			}
+			if(cnst) {
+				if(optype(p->op) == I) {
+					print("\tLD\tA,%s\n", hreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tLD\tL,A\n");
+					print("\tLD\tA,#%d\n", ((n>>8)&0xFF)^0x80);
+					print("\tCP\tL\n");
+				} else {
+					print("\tLD\tA,#%d\n", (n>>8)&0xFF);
+					print("\tCP\t%s\n", hreg[sreg1]);
+				}
+			} else {
+				if(optype(p->op) == I) {
+					print("\tLD\tA,%s\n", hreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tLD\tL,A\n");
+					print("\tLD\tA,%s\n", hreg[sreg2]);
+					print("\tADD\t#0x80\n");
+					print("\tCP\tL\n");
+				} else {
+					print("\tLD\tA,%s\n", hreg[sreg2]);
+					print("\tCP\t%s\n", hreg[sreg1]);
+				}
+			}
+			print("\tJR\tNZ,.L%d\n", lab);
+			if(cnst)
+				print("\tLD\tA,#%d\n", n&0xFF);
+			else
+				print("\tLD\tA,%s\n", lreg[sreg2]);
+			print("\tSUB\t%s\n", lreg[sreg1]);
+			print(".L%d:\n", lab);
+			print("\tJP\tC,%s\n", jmp);
+			print("\n");
+			break;
+		}
+		case LT+I+sizeop(1):
+		case LT+U+sizeop(1): {
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			char *jmp = p->syms[0]->x.name;
+			int cnst = IS_RIGHT_CONST(p);
+
+			if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_ADDRFP(p->kids[1]) || IS_LEFT_ADDRLP(p->kids[1]))) {
+				int off = (int)const_val(LEFT_CHILD(p->kids[1]));
+
+				print("\n\t;; Compare GE %s and (mem)\n", lreg[sreg1]);
+				offsethl(off + framesize + argstack);
+				if(optype(p->op) == I) {
+					print("\tLD\tA,(HL)\n");
+					print("\tADD\t#0x80\n");
+					print("\tLD\tL,A\n");
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tCP\tL\n");
+				} else {
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tCP\t(HL)\n");
+				}
+			} else if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_CONST(p->kids[1]) || IS_LEFT_ADDRGP(p->kids[1]))) {
+				char *addr = LEFT_VAL(p->kids[1]);
+
+				print("\n\t;; Compare GE %s and (mem)\n", lreg[sreg1]);
+				if(optype(p->op) == I) {
+					print("\tLD\tA,(#%s)\n", addr);
+					print("\tADD\t#0x80\n");
+					print("\tLD\tL,A\n");
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tCP\tL\n");
+				} else {
+					print("\tLD\tA,(%s)\n", addr);
+					print("\tCP\t(HL)\n");
+				}
+			} else if(IS_RIGHT_CONST(p)) {
+				int i = (int)const_val(RIGHT_CHILD(p));
+
+				print("\n\t;; Compare GE %s and %s\n", lreg[sreg1], RIGHT_VAL(p));
+				if(optype(p->op) == I) {
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tCP\t#%d\n", i^0x80);
+				} else {
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tCP\t#%d\n", i);
+				}
+			} else {
+				int sreg2 = RIGHT_REG(p);
+
+				if(IS_RIGHT_INDIR(p)) {
+					print("\n\t;; Compare GE %s and (mem)\n", lreg[sreg1]);
+					if(optype(p->op) == I) {
+						print("\tLD\tA,(%s)\n", intreg[sreg2]->x.name);
+						print("\tADD\t#0x80\n");
+						print("\tLD\tL,A\n");
+						print("\tLD\tA,%s\n", lreg[sreg1]);
+						print("\tADD\t#0x80\n");
+						print("\tCP\tL\n");
+					} else {
+						print("\tLD\tA,%s\n", lreg[sreg1]);
+						print("\tLD\tH,%s\n", hreg[sreg2]);
+						print("\tLD\tL,%s\n", lreg[sreg2]);
+						print("\tCP\t(HL)\n");
+					}
+				} else {
+					print("\n\t;; Compare GE %s and %s\n", lreg[sreg1], lreg[sreg2]);
+					if(optype(p->op) == I) {
+						print("\tLD\tA,%s\n", lreg[sreg2]);
+						print("\tADD\t#0x80\n");
+						print("\tLD\tL,A\n");
+						print("\tLD\tA,%s\n", lreg[sreg1]);
+						print("\tADD\t#0x80\n");
+						print("\tCP\tL\n");
+					} else {
+						print("\tLD\tA,%s\n", lreg[sreg1]);
+						print("\tCP\t%s\n", lreg[sreg2]);
+					}
+				}
+			}
+			print("\tJP\tC,%s\n", jmp);
+			print("\n");
+			break;
+		}
+		case LT+I+sizeop(2):
+		case LT+U+sizeop(2): {
+			int lab = genlabel(1);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			int sreg2;
+			char *val;
+			long n;
+			char *jmp = p->syms[0]->x.name;
+			int cnst = IS_RIGHT_CONST(p);
+
+			if(opsize(p->x.kids[0]->op) == 1) {
+				if(optype(p->x.kids[0]->op) == I)
+					cvt_s8_16(sreg1, sreg1);
+				else
+					cvt_u8_16(sreg1, sreg1);
+			}
+			if(cnst) {
+				val = RIGHT_VAL(p);
+				n = const_val(RIGHT_CHILD(p));
+				print("\n\t;; Compare LT %s and %s\n", intreg[sreg1]->x.name,
+					val);
+			} else {
+				sreg2 = RIGHT_REG(p);
+				if(opsize(p->x.kids[1]->op) == 1) {
+					if(optype(p->x.kids[1]->op) == I)
+						cvt_s8_16(sreg2, sreg2);
+					else
+						cvt_u8_16(sreg2, sreg2);
+				}
+				print("\n\t;; Compare LT %s and %s\n", intreg[sreg1]->x.name,
+					intreg[sreg2]->x.name);
+			}
+			if(cnst) {
+				if(optype(p->op) == I) {
+					print("\tLD\tA,%s\n", hreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tCP\t#%d\n", ((n>>8)&0xFF)^0x80);
+				} else {
+					print("\tLD\tA,%s\n", hreg[sreg1]);
+					print("\tCP\t#%d\n", (n>>8)&0xFF);
+				}
+			} else {
+				if(optype(p->op) == I) {
+					print("\tLD\tA,%s\n", hreg[sreg2]);
+					print("\tADD\t#0x80\n");
+					print("\tLD\tL,A\n");
+					print("\tLD\tA,%s\n", hreg[sreg1]);
+					print("\tADD\t#0x80\n");
+					print("\tCP\tL\n");
+				} else {
+					print("\tLD\tA,%s\n", hreg[sreg1]);
+					print("\tCP\t%s\n", hreg[sreg2]);
+				}
+			}
+			print("\tJR\tNZ,.L%d\n", lab);
+			print("\tLD\tA,%s\n", lreg[sreg1]);
+			if(cnst)
+				print("\tCP\t#%d\n", n&0xFF);
+			else
+				print("\tCP\t%s\n", lreg[sreg2]);
+			print(".L%d:\n", lab);
+			print("\tJP\tC,%s\n", jmp);
+			print("\n");
+			break;
+		}
+		case NE+I+sizeop(1):
+		case NE+U+sizeop(1): {
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			char *jmp = p->syms[0]->x.name;
+			int cnst = IS_RIGHT_CONST(p);
+
+			if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_ADDRFP(p->kids[1]) || IS_LEFT_ADDRLP(p->kids[1]))) {
+				int off = (int)const_val(LEFT_CHILD(p->kids[1]));
+
+				print("\n\t;; Compare NE %s and (mem)\n", lreg[sreg1]);
+				offsethl(off + framesize + argstack);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tCP\t(HL)\n");
+			} else if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_CONST(p->kids[1]) || IS_LEFT_ADDRGP(p->kids[1]))) {
+				char *addr = LEFT_VAL(p->kids[1]);
+
+				print("\n\t;; Compare NE %s and (mem)\n", lreg[sreg1]);
+				print("\tLD\tA,(%s)\n", addr);
+				print("\tCP\t%s\n", lreg[sreg1]);
+			} else if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+
+				print("\n\t;; Compare NE %s and %s\n", lreg[sreg1], val);
+				print("\tLD\tA,%s\n", lreg[sreg1]);
+				print("\tCP\t#<%s\n", val);
+			} else {
+				int sreg2 = RIGHT_REG(p);
+
+				if(IS_RIGHT_INDIR(p)) {
+					print("\n\t;; Compare NE %s and (mem)\n", lreg[sreg1]);
+					print("\tLD\tA,(%s)\n", intreg[sreg2]->x.name);
+					print("\tCP\t%s\n", lreg[sreg1]);
+				} else {
+					print("\n\t;; Compare NE %s and %s\n", lreg[sreg1], lreg[sreg2]);
+					print("\tLD\tA,%s\n", lreg[sreg1]);
+					print("\tCP\t%s\n", lreg[sreg2]);
+				}
+			}
+			print("\tJP\tNZ,%s\n", jmp);
+			print("\n");
+			break;
+		}
+		case NE+I+sizeop(2):
+		case NE+U+sizeop(2): {
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			int sreg2;
+			char *val;
+			char *jmp = p->syms[0]->x.name;
+			int cnst = IS_RIGHT_CONST(p);
+
+			if(opsize(p->x.kids[0]->op) == 1) {
+				if(optype(p->x.kids[0]->op) == I)
+					cvt_s8_16(sreg1, sreg1);
+				else
+					cvt_u8_16(sreg1, sreg1);
+			}
+			if(cnst) {
+				val = RIGHT_VAL(p);
+				print("\n\t;; Compare NE %s and %s\n", intreg[sreg1]->x.name,
+					val);
+			} else {
+				sreg2 = RIGHT_REG(p);
+				if(opsize(p->x.kids[1]->op) == 1) {
+					if(optype(p->x.kids[1]->op) == I)
+						cvt_s8_16(sreg2, sreg2);
+					else
+						cvt_u8_16(sreg2, sreg2);
+				}
+				print("\n\t;; Compare NE %s and %s\n", intreg[sreg1]->x.name,
+					intreg[sreg2]->x.name);
+			}
+			print("\tLD\tA,%s\n", lreg[sreg1]);
+			if(cnst)
+				print("\tCP\t#<%s\n", val);
+			else
+				print("\tCP\t%s\n", lreg[sreg2]);
+			print("\tJP\tNZ,%s\n", jmp);
+			print("\tLD\tA,%s\n", hreg[sreg1]);
+			if(cnst)
+				print("\tCP\t#>%s\n", val);
+			else
+				print("\tCP\t%s\n", hreg[sreg2]);
+			print("\tJP\tNZ,%s\n", jmp);
+			print("\n");
+			break;
+		}
+		case LSH+I+sizeop(1):
+		case LSH+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg = LEFT_X_CHILD_REG(p);
+
+			if(IS_RIGHT_CONST(p)) {
+				int n = (int)const_val(RIGHT_CHILD(p));
+
+				print("\n\t;; Left shift %s by %s into %s\n", lreg[sreg],
+					RIGHT_VAL(p), lreg[dreg]);
+				if(dreg != sreg)
+					print("\tLD\t%s,%s\n", lreg[dreg], lreg[sreg]);
+				while(n-- > 0)
+					print("\tSLA\t%s\n", lreg[dreg]);
+			} else {
+				int lab1 = genlabel(1);
+				int lab2 = genlabel(1);
+				int shift = RIGHT_REG(p);
+
+				print("\n\t;; Left shift %s by %s into %s\n", lreg[sreg],
+					lreg[shift], lreg[dreg]);
+				print("\tLD\tA,%s\n", lreg[sreg]);
+				if(optype(p->op) == I)
+					print("\tCALL\t.asl8\n");
+				else
+					print("\tCALL\t.lsl8\n");
+			}
+			print("\n");
+			break;
+		}
+		case LSH+I+sizeop(2):
+		case LSH+U+sizeop(2): {
+			int dreg = REG(p);
+			int sreg = LEFT_X_CHILD_REG(p);
+
+			if(opsize(p->x.kids[0]->op) == 1) {
+				if(optype(p->x.kids[0]->op) == I)
+					cvt_s8_16(sreg, sreg);
+				else
+					cvt_u8_16(sreg, sreg);
+			}
+			if(IS_RIGHT_CONST(p)) {
+				int n = (int)const_val(RIGHT_CHILD(p));
+
+				print("\n\t;; Left shift %s by %s into %s\n", intreg[sreg]->x.name,
+					RIGHT_VAL(p), intreg[dreg]->x.name);
+				if(dreg != sreg) {
+					print("\tLD\t%s,%s\n", hreg[dreg], hreg[sreg]);
+					print("\tLD\t%s,%s\n", lreg[dreg], lreg[sreg]);
+				}
+				while(n-- > 0) {
+					print("\tSLA\t%s\n", lreg[dreg]);
+					print("\tRL\t%s\n", hreg[dreg]);
+				}
+			} else {
+				int shift = RIGHT_REG(p);
+
+				print("\n\t;; Left shift %s by %s into %s\n", intreg[sreg]->x.name,
+					lreg[shift], intreg[dreg]->x.name);
+				print("\tLD\tA,%s\n", lreg[sreg]);
+				if(optype(p->op) == I)
+					print("\tCALL\t.asl16\n");
+				else
+					print("\tCALL\t.lsl16\n");
+			}
+			print("\n");
+			break;
+		}
+		case RSH+I+sizeop(1):
+		case RSH+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg = LEFT_X_CHILD_REG(p);
+
+			if(IS_RIGHT_CONST(p)) {
+				int n = (int)const_val(RIGHT_CHILD(p));
+
+				print("\n\t;; Right shift %s by %s into %s\n", lreg[sreg],
+					RIGHT_VAL(p), lreg[dreg]);
+				if(dreg != sreg)
+					print("\tLD\t%s,%s\n", lreg[dreg], lreg[sreg]);
+				while(n-- > 0)
+					if(optype(p->op) == I)
+						print("\tSRA\t%s\n", lreg[dreg]);
+					else
+						print("\tSRL\t%s\n", lreg[dreg]);
+			} else {
+				int lab1 = genlabel(1);
+				int lab2 = genlabel(1);
+				int shift = RIGHT_REG(p);
+
+				print("\n\t;; Right shift %s by %s into %s\n", lreg[sreg],
+					lreg[shift], lreg[dreg]);
+				if(optype(p->op) == I)
+					print("\tCALL\t.asr8\n");
+				else
+					print("\tCALL\t.lsr8\n");
+			}
+			print("\n");
+			break;
+		}
+		case RSH+I+sizeop(2):
+		case RSH+U+sizeop(2): {
+			int dreg = REG(p);
+			int sreg = LEFT_X_CHILD_REG(p);
+
+			if(opsize(p->x.kids[0]->op) == 1) {
+				if(optype(p->x.kids[0]->op) == I)
+					cvt_s8_16(sreg, sreg);
+				else
+					cvt_u8_16(sreg, sreg);
+			}
+			if(IS_RIGHT_CONST(p)) {
+				int n = (int)const_val(RIGHT_CHILD(p));
+
+				print("\n\t;; Right shift %s by %s into %s\n", intreg[sreg]->x.name,
+					RIGHT_VAL(p), intreg[dreg]->x.name);
+				if(dreg != sreg) {
+					print("\tLD\t%s,%s\n", hreg[dreg], hreg[sreg]);
+					print("\tLD\t%s,%s\n", lreg[dreg], lreg[sreg]);
+				}
+				while(n-- > 0) {
+					if(optype(p->op) == I)
+						print("\tSRA\t%s\n", hreg[dreg]);
+					else
+						print("\tSRL\t%s\n", hreg[dreg]);
+					print("\tRR\t%s\n", lreg[dreg]);
+				}
+			} else {
+				int shift = RIGHT_REG(p);
+
+				print("\n\t;; Right shift %s by %s into %s\n", intreg[sreg]->x.name,
+					lreg[shift], intreg[dreg]->x.name);
+				print("\tLD\tA,%s\n", lreg[sreg]);
+				if(optype(p->op) == I)
+					print("\tCALL\t.asr16\n");
+				else
+					print("\tCALL\t.lsr16\n");
+			}
+			print("\n");
+			break;
+		}
+		case MUL+I+sizeop(1):
+		case MUL+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			int sreg2 = RIGHT_REG(p);
+
+			print("\n\t;; Multiply %s by %s into %s\n", lreg[sreg1],
+				lreg[sreg2], lreg[dreg]);
+			if(optype(p->op) == I)
+				print("\tCALL\t.mul8\n");
+			else
+				print("\tCALL\t.mulu8\n");
+			print("\n");
+			break;
+		}
+		case MUL+I+sizeop(2):
+		case MUL+U+sizeop(2): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			int sreg2 = RIGHT_REG(p);
+
+			if(opsize(p->x.kids[0]->op) == 1) {
+				if(optype(p->x.kids[0]->op) == I)
+					cvt_s8_16(sreg1, sreg1);
+				else
+					cvt_u8_16(sreg1, sreg1);
+			}
+			if(opsize(p->x.kids[1]->op) == 1) {
+				if(optype(p->x.kids[1]->op) == I)
+					cvt_s8_16(sreg2, sreg2);
+				else
+					cvt_u8_16(sreg2, sreg2);
+			}
+
+			print("\n\t;; Multiply %s by %s into %s\n", intreg[sreg1]->x.name,
+				intreg[sreg2]->x.name, intreg[dreg]->x.name);
+			if(optype(p->op) == I)
+				print("\tCALL\t.mul16\n");
+			else
+				print("\tCALL\t.mulu16\n");
+			print("\n");
+			break;
+		}
+		case DIV+I+sizeop(1):
+		case DIV+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			int sreg2 = RIGHT_REG(p);
+
+			print("\n\t;; Divide %s by %s into %s\n", lreg[sreg1],
+				lreg[sreg2], lreg[dreg]);
+			if(optype(p->op) == I)
+				print("\tCALL\t.div8\n");
+			else
+				print("\tCALL\t.divu8\n");
+			print("\n");
+			break;
+		}
+		case DIV+I+sizeop(2):
+		case DIV+U+sizeop(2): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			int sreg2 = RIGHT_REG(p);
+
+			if(opsize(p->x.kids[0]->op) == 1) {
+				if(optype(p->x.kids[0]->op) == I)
+					cvt_s8_16(sreg1, sreg1);
+				else
+					cvt_u8_16(sreg1, sreg1);
+			}
+			if(opsize(p->x.kids[1]->op) == 1) {
+				if(optype(p->x.kids[1]->op) == I)
+					cvt_s8_16(sreg2, sreg2);
+				else
+					cvt_u8_16(sreg2, sreg2);
+			}
+
+			print("\n\t;; Divide %s by %s into %s\n", intreg[sreg1]->x.name,
+				intreg[sreg2]->x.name, intreg[dreg]->x.name);
+			if(optype(p->op) == I)
+				print("\tCALL\t.div16\n");
+			else
+				print("\tCALL\t.divu16\n");
+			print("\n");
+			break;
+		}
+		case MOD+I+sizeop(1):
+		case MOD+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			int sreg2 = RIGHT_REG(p);
+
+			print("\n\t;; Modulo of %s by %s into %s\n", lreg[sreg1],
+				lreg[sreg2], lreg[dreg]);
+			if(optype(p->op) == I)
+				print("\tCALL\t.mod8\n");
+			else
+				print("\tCALL\t.modu8\n");
+			print("\n");
+			break;
+		}
+		case MOD+I+sizeop(2):
+		case MOD+U+sizeop(2): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			int sreg2 = RIGHT_REG(p);
+
+			if(opsize(p->x.kids[0]->op) == 1) {
+				if(optype(p->x.kids[0]->op) == I)
+					cvt_s8_16(sreg1, sreg1);
+				else
+					cvt_u8_16(sreg1, sreg1);
+			}
+			if(opsize(p->x.kids[1]->op) == 1) {
+				if(optype(p->x.kids[1]->op) == I)
+					cvt_s8_16(sreg2, sreg2);
+				else
+					cvt_u8_16(sreg2, sreg2);
+			}
+
+			print("\n\t;; Modulo of %s by %s into %s\n", intreg[sreg1]->x.name,
+				intreg[sreg2]->x.name, intreg[dreg]->x.name);
+			if(optype(p->op) == I)
+				print("\tCALL\t.mod16\n");
+			else
+				print("\tCALL\t.modu16\n");
+			print("\n");
+			break;
+		}
+		case RET+I+sizeop(1):
+		case RET+U+sizeop(1):
+		case RET+I+sizeop(2):
+		case RET+U+sizeop(2):
+		case RET+P+sizeop(2):
+			print("\n");
+			break;
+		default: {
+			fprintf(stderr, "ERROR: unimplemented instruction %s\n", opname(p->op));
+			break;
+		}
+	}
+}
+
+static void offsetsp(int off) {
+	while(off < -0x80) {
+		print("\tLDA\tSP,%d(SP)\n", -0x80);
+		off += 0x80;
+	}
+	while(off > 0x7F) {
+		print("\tLDA\tSP,%d(SP)\n", 0x7F);
+		off -= 0x7F;
+	}
+	if(off == 1)
+		print("\tINC\tSP\n");
+	else if(off == -1)
+		print("\tDEC\tSP\n");
+	else if(off != 0)
+		print("\tLDA\tSP,%d(SP)\n", off);
+}
+
+static void offsethl(int off) {
+	if(off >= -0x80 && off <= 0x7F)
+		print("\tLDA\tHL,%d(SP)\n", off);
+	else {
+		print("\tLDA\tHL,0(SP)\n");
+		print("\tPUSH\tBC\n");
+		print("\tLD\tBC,#%d\n", off);
+		print("\tADD\tHL,BC\n");
+		print("\tPOP\tBC\n");
+	}
+}
+
+static void mv_8_8(int dreg, int sreg)
+{
+	if(dreg != sreg)
+		print("\tLD\t%s,%s\n", lreg[dreg], lreg[sreg]);
+}
+
+static void mv_16_16(int dreg, int sreg)
+{
+	if(dreg != sreg) {
+		print("\tLD\t%s,%s\n", hreg[dreg], hreg[sreg]);
+		print("\tLD\t%s,%s\n", lreg[dreg], lreg[sreg]);
+	}
+}
+
+static void cvt_s8_16(int dreg, int sreg)
+{
+	print("\n\t;; Signed extend %s into %s\n", lreg[sreg], intreg[dreg]->x.name);
+	print("\tLD\tA,%s\n", lreg[sreg]);
+	if(dreg != sreg)
+		print("\tLD\t%s,A\n", lreg[dreg]);
+	print("\tRLCA\n");
+	print("\tSBC\tA\n");
+	print("\tLD\t%s,A\n", hreg[dreg]);
+}
+
+static void cvt_u8_16(int dreg, int sreg)
+{
+	print("\n\t;; Unsigned extend %s into %s\n", lreg[sreg], intreg[dreg]->x.name);
+	print("\tLD\t%s,#0\n", hreg[dreg]);
+	if(dreg != sreg)
+		print("\tLD\t%s,%s\n", lreg[dreg], lreg[sreg]);
+}
+
+static void load_acc(long val, int byte, int checklast)
+{
+	static int last = 0;
+
+	if(byte == HIGH) {
+		if(!checklast || ((val>>8)&0xFF) != last) {
+			if(((val>>8)&0xFF) == 0)
+				print("\tXOR\tA\n");
+			else
+				print("\tLD\tA,#>%d\n", val);
+		}
+		last = (val>>8)&0xFF;
+	} else if(byte == LOW) {
+		if(!checklast || (val&0xFF) != last) {
+			if((val&0xFF) == 0)
+				print("\tXOR\tA\n");
+			else
+				print("\tLD\tA,#<%d\n", val);
+		}
+		last = val&0xFF;
+	}
+}
+
+long const_val(Node p)
+{
+	if(generic(p->op) == ADDRF || generic(p->op) == ADDRL) {
+		assert(p->syms[0] != NULL);
+		return p->syms[0]->x.offset;
+	}
+	if(generic(p->op) == CNST) {
+		assert(p->syms[0] != NULL);
+		if(optype(p->op) == I)
+			return p->syms[0]->u.c.v.i;
+		else if(optype(p->op) == U)
+			return p->syms[0]->u.c.v.u;
+	}
+	if(generic(p->op) == CALL) {
+		assert(p->syms[0] != NULL);
+		return p->syms[0]->u.c.v.i;
+	}
+	if(generic(p->op) == INDIR) {
+		assert(p->syms[RX]->u.t.cse->syms[0] != NULL);
+		if(optype(p->op) == I)
+			return p->syms[RX]->u.t.cse->syms[0]->u.c.v.i;
+		else if(optype(p->op) == U)
+			return p->syms[RX]->u.t.cse->syms[0]->u.c.v.u;
+	}
+	assert(0);
+	return 0;
+}
+
+#define isfp(p) (optype((p)->op)==F)
+
+static int ckstack(Node p, int n) {
+	int i;
+
+	for(i = 0; i < NELEMS(p->x.kids) && p->x.kids[i]; i++)
+		if(isfp(p->x.kids[i]))
+			n--;
+	if(isfp(p) && p->count > 0)
+		n++;
+	if(n > 8)
+		error("expression too complicated\n");
+	debug(fprint(stderr, "(ckstack(%x)=%d)\n", p, n));
+	assert(n >= 0);
+	return n;
+}
+
+static void doarg(Node p) {
+	assert(p && p->syms[0]);
+	mkactual(1, p->syms[0]->u.c.v.i);
+}
+
+static void blkfetch(int k, int off, int reg, int tmp) {}
+
+static void blkstore(int k, int off, int reg, int tmp) {}
+
+static void blkloop(int dreg, int doff, int sreg, int soff, int size, int tmps[]) {}
+
+static void local(Symbol p) {
+	if(isfloat(p->type))
+		p->sclass = AUTO;
+	if(askregvar(p, rmap(ttob(p->type))) == 0)
+		mkauto(p);
+}
+
+static void function(Symbol f, Symbol caller[], Symbol callee[], int n) {
+	int i;
+
+	print("%s:\n", f->x.name);
+	print("\tPUSH\tBC\n");
+	usedmask[0] = usedmask[1] = 0;
+	freemask[0] = freemask[1] = ~(unsigned)0;
+	offset = 2 + 2;
+	/* offset = return address + saved registers */
+	for(i = 0; callee[i]; i++) {
+		Symbol p = callee[i];
+		Symbol q = caller[i];
+		assert(q);
+		p->x.offset = q->x.offset = offset;
+		p->x.name = q->x.name = stringf("%d", p->x.offset);
+		p->sclass = q->sclass = AUTO;
+		offset += q->type->size;
+	}
+	assert(caller[i] == 0);
+	offset = maxoffset = 0;
+	gencode(caller, callee);
+	framesize = maxoffset;
+	if(framesize > 0)
+		offsetsp(-framesize);
+	emitcode();
+	if(framesize > 0)
+		offsetsp(framesize);
+	print("\tPOP\tBC\n");
+	print("\tRET\n");
+}
+
+static void defsymbol(Symbol p) {
+	if(p->scope >= LOCAL && p->sclass == STATIC)
+		p->x.name = stringf("L%d", genlabel(1));
+	else if(p->generated)
+		p->x.name = stringf("L%s", p->name);
+	else if(p->scope == GLOBAL || p->sclass == EXTERN)
+		p->x.name = stringf("_%s", p->name);
+	else
+		p->x.name = p->name;
+}
+
+static void address(Symbol q, Symbol p, int n) {
+	q->x.offset = p->x.offset + n;
+	if (p->scope == GLOBAL || p->sclass == STATIC || p->sclass == EXTERN)
+		q->x.name = stringf("%s%s%d", p->x.name, n >= 0 ? "+" : "", n);
+	else
+		q->x.name = stringd(q->x.offset);
+}
+
+static void defconst(int suffix, int size, Value v) {
+	if(suffix == I && size == 1)
+		print("\t.db\t0x%x\n", v.u);
+	else if(suffix == I && size == 2)
+		print("\t.dw\t0x%x\n", v.i);
+	else if(suffix == U && size == 1)
+		print("\t.db\t0x%x\n", v.u);
+	else if(suffix == U && size == 2)
+		print("\t.dw\t0x%x\n", v.u);
+	else if(suffix == P && size == 2)
+		print("\t.dw\t0x%x\n", v.p);
+	else if(suffix == F && size == 2)
+		;
+	else assert(0);
+}
+
+static void defaddress(Symbol p) {
+	print("\t.dw\t%s\n", p->x.name);
+}
+
+static void defstring(int n, char *str) {
+	char *s;
+
+	for(s = str; s < str + n; s++)
+		print("\t.db\t%d\n", (*s)&0377);
+}
+
+static void export(Symbol p) {
+	if(!HARDWARE_REG(p->x.name))
+		print("\t.globl\t%s\n", p->x.name);
+}
+
+static void import(Symbol p) {
+	if(p->ref > 0 && !HARDWARE_REG(p->x.name))
+		print("\t.globl\t%s\n", p->x.name);
+}
+
+static void global(Symbol p) {
+	print("%s:\n", p->x.name);
+	if(p->u.seg == BSS)
+		print("\t.blkb\t%d\n", p->type->size);
+}
+
+static void space(int n) {
+	if(cseg != BSS)
+		print("\t.blkb\t%d\n", n);
+}
+
+Interface z80IR = {
+	1, 1, 0,  /* char */
+	1, 1, 0,  /* short */
+	1, 1, 0,  /* int */
+	2, 1, 0,  /* long */
+	2, 1, 1,  /* float */
+	2, 1, 1,  /* double */
+	2, 1, 1,  /* long double */
+	2, 1, 0,  /* T* */
+	0, 1, 0,  /* struct */
+	1,		  /* little_endian */
+	1,		  /* mulops_calls: mul/div/mod are library routines */
+	0,		  /* wants_callb */
+	1,		  /* wants_argb */
+	0,		  /* left_to_right */
+	0,		  /* wants_dag */
+	address,
+	blockbeg,
+	blockend,
+	defaddress,
+	defconst,
+	defstring,
+	defsymbol,
+	emit,
+	export,
+	function,
+	gen,
+	global,
+	import,
+	local,
+	progbeg,
+	progend,
+	segment,
+	space,
+	0, 0, 0, 0, 0, 0, 0,
+	{
+		2,		/* max_unaligned_load */
+		rmap,
+		blkfetch,
+		blkstore,
+		blkloop,
+		_label,
+		_rule,
+		_nts,
+		_kids,
+		_string,
+		_templates,
+		_isinstruction,
+		_ntname,
+		emit2,
+		doarg,
+		target,
+		clobber
+	}
+};

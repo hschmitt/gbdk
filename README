@@ -1,0 +1,70 @@
+The Gameboy Development Kit (GBDK)
+----------------------------------
+
+A C compiler, assembler, linker and set of libraries for the Nintendo
+Gameboy and more.
+
+Pascal Felber, Lars Malmborg, Michael Hope.
+
+Contact:
+Michael Hope <michaelh@earthling.net>
+
+A very quick overview
+---------------------
+
+The GBDK is based around the lcc retargetable C compiler with
+a gbz80 backend, the ASxxxx assembler and linker, and a set of libraries.
+
+The gbz80 is very similar to the Zilog Z80, and from 2.0.16 it has been
+possible to target GBDK to a real Z80.  See 'Compiling' later for more
+information.
+
+Targets
+-------
+Processors:
+	gbz80 (as used in the Gameboy)
+	z80 (as in the Gamegear and pretty much every home computer
+	     from the 1980's)
+Platforms:
+	gb (Nintendo Gameboy)
+	gg (Sega Gamegear - very limited support)
+
+Host platforms
+--------------
+DOS - has been compiled with gcc-go32 and mingw32.
+Unix - Developed under Solaris and Linux-glibc.
+
+Building
+--------
+All options are set through the Makefile.  I (MLH) reccomend using command
+line options instead of modifing the Makefile.  Defaults have an asterix
+beside them.
+
+TARGETOS (host operating system - used for cross-compiling)
+	unix (*)
+	dos
+	See also HOSTCC and HOSTLD if cross-compiling
+
+PLATFORM
+	gb (*) - Nintendo GB/CGB/SGB
+	rrgb - Rough 'n ready Gameboy emulator 
+	     - see www.pcmedia.co.nz/~michaelh/
+	gg - Sega Gamegear (incomplete)
+	z80 - generic z80
+
+PROCESSOR 
+	gbz80 (*)
+	z80 
+
+SDK_DIR - top level of where GBDK will be installed.
+	Default is $(HOME) - installs into $(HOME)/SDK/...
+	Alternative - /usr/lib to install into /usr/lib/SDK/...
+
+'make' build it
+'make install' installs it on a Unix system
+'make dist' makes the distribution
+'make zdist' makes a compressed distribution
+'make clean' does something.
+
+e.g
+'make SDK_DIR=/usr/lib PLATFORM=rrgb install'

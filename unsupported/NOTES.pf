@@ -1,0 +1,48 @@
+************************************************************
+
+In my backend, I have to know in 'emit2' which register is currently
+free, and which one is not, on a per-instruction basis. 'freemask'
+only gives a global information on free registers (it is not modified
+during emitting instructions). The solution I found so far is:
+
+- Add a field in the 'Xnode' struct in 'config.h'
+
+#ifdef SDK
+	unsigned freemask[2];
+#endif
+
+- Update this field in the last loop at the end of 'gen' in 'gen.c'
+
+#ifdef SDK
+	p->x.freemask[0] = freemask[0];
+	p->x.freemask[1] = freemask[1];
+#endif
+
+That way, I can know in 'emit2' which register is free at which
+moment. I think this modification is correct, but I would have
+prefered not to have to modify the code of lcc. Is there another
+cleaner way for doing this? Would it be useful to add this feature to
+lcc?
+
+************************************************************
+
+[5 Sep 1998]
+
+I modified lburg so that it accepts comments in rules. The
+modification is in 'gram.y', in function 'get()'. The end of the
+function is now:
+
+		while (buf[0] == '/' && buf[1] == '/') {
+			if (fgets(buf, sizeof buf, infp) == NULL)
+				return EOF;
+			yylineno++;
+		}
+	}
+	return *bp++;
+}
+
+************************************************************
+
+[24 Sep 1998]
+
+Remove calls to 'x86linux_init()' in 'inits.c'.

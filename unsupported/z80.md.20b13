@@ -1,0 +1,4859 @@
+%{
+/*
+Print with:
+	enscript -2rGC -T 2 -f Courier6 -o z80.ps z80.md
+*/
+
+/*
+	Notes:
+
+		Variadic functions *MUST* have a prototype for the arguments
+		to be passed on the stack.
+
+		sizeof(char)      == 1
+		sizeof(short)     == 1
+		sizeof(int)       == 2
+		sizeof(long)      == 4
+		sizeof(long long) == 4
+		sizeof(float)     == 4
+
+		Using unsigned values is always more efficient.
+
+		Comparing values for (un)equatily is always the most
+		efficient.
+
+		When using 8-bit arithmetics, use short instead of char.
+*/
+
+#define NBBREG 6
+#ifdef GAMEBOY
+#define NBWREG 3
+#else
+#define NBWREG 5
+#endif
+#define NBXREG 8
+
+enum {
+	B_=0,
+	D_=1,
+	H_=2,
+	_C=3,
+	_E=4,
+	_L=5
+};
+
+enum {
+	BC=0,
+	DE=1,
+	HL=2,
+#ifdef GAMEBOY
+#else
+	IX=3,
+	IY=4
+#endif
+};
+
+#include "c.h"
+#define NODEPTR_TYPE Node
+#define OP_LABEL(p) ((p)->op)
+#define LEFT_CHILD(p) ((p)->kids[0])
+#define RIGHT_CHILD(p) ((p)->kids[1])
+#define LEFT_X_CHILD(p) ((p)->x.kids[0])
+#define RIGHT_X_CHILD(p) ((p)->x.kids[1])
+#define STATE_LABEL(p) ((p)->x.state)
+static void address(Symbol, Symbol, long);
+static void blkfetch(int, int, int, int);
+static void blkloop(int, int, int, int, int, int[]);
+static void blkstore(int, int, int, int);
+static void defaddress(Symbol);
+static void defconst(int, int, Value);
+static void defstring(int, char *);
+static void defsymbol(Symbol);
+static void doarg(Node);
+static void emit2(Node);
+static void export(Symbol);
+static void clobber(Node);
+static void function(Symbol, Symbol [], Symbol [], int);
+static void global(Symbol);
+static void import(Symbol);
+static void local(Symbol);
+static void progbeg(int, char **);
+static void progend(void);
+static void segment(int);
+static void space(int);
+static void target(Node);
+static int ckstack(Node, int);
+static int memop(Node);
+static int sametree(Node, Node);
+static void stabinit(char *, int, char *[]);
+static void stabline(Coordinate *);
+
+#ifdef GAMEBOY
+#else
+static Symbol argreg(Symbol, int, int, int);
+#endif
+
+static void debug_node(Node);
+static int move_r(Node);
+static int save(int);
+static int restore(int);
+static void offsetsp(int);
+#ifdef GAMEBOY
+static void offsethl(int);
+#endif
+static void load_32(Node);
+static void store_32(Node);
+static int const_val(Node);
+static int tmp8(int);
+static int tmp16(int);
+
+#define STR str_alloc
+/* #define STR stringf */
+
+static char *currentfile;
+static int currentline;
+static FILE *srcfp;
+static int srcpos;
+
+static Symbol reg8[32], reg16[32], reg32[32];
+static Symbol reg8w, reg16w, reg32w;
+
+static unsigned freereg = 0;
+
+/* Long registers */
+static char *xreg[] = {
+	".lreg0",
+	".lreg1",
+	".lreg2",
+	".lreg3",
+	".lreg4",
+	".lreg5",
+	".lreg6",
+	".lreg7"
+};
+
+/* Word registers */
+static char *wreg[] = {
+	"BC",
+	"DE",
+	"HL",
+#ifdef GAMEBOY
+#else
+	"IX",
+	"IY"
+#endif
+};
+
+/* High-byte registers */
+static char *hreg[] = {
+	"B",
+	"D",
+	"H"
+};
+
+/* Low-byte registers */
+static char *lreg[] = {
+	"C",
+	"E",
+	"L"
+};
+
+/* Byte registers */
+static char *breg[] = {
+	"B",
+	"D",
+	"H",
+	"C",
+	"E",
+	"L"
+};
+
+static int cseg;
+static int debug;
+static int optimize;
+static int comments;
+static char rom_bank_str[32];
+static char ram_bank_str[32];
+static int argstack;
+
+#include "opt.c"
+
+%}
+%start stmt
+%term CNSTF4=4113
+%term CNSTI1=1045 CNSTI2=2069 CNSTI4=4117
+%term CNSTP2=2071
+%term CNSTU1=1046 CNSTU2=2070 CNSTU4=4118
+
+%term ARGB=41
+%term ARGF4=4129
+%term ARGI1=1061 ARGI2=2085 ARGI4=4133
+%term ARGP2=2087
+%term ARGU1=1062 ARGU2=2086 ARGU4=4134
+
+%term ASGNB=57
+%term ASGNF4=4145
+%term ASGNI1=1077 ASGNI2=2101 ASGNI4=4149
+%term ASGNP2=2103
+%term ASGNU1=1078 ASGNU2=2102 ASGNU4=4150
+
+%term INDIRB=73
+%term INDIRF4=4161
+%term INDIRI1=1093 INDIRI2=2117 INDIRI4=4165
+%term INDIRP2=2119
+%term INDIRU1=1094 INDIRU2=2118 INDIRU4=4166
+
+%term CVFF4=4209
+%term CVFI1=1141 CVFI2=2165 CVFI4=4213
+
+%term CVIF4=4225
+%term CVII1=1157 CVII2=2181 CVII4=4229
+%term CVIU1=1158 CVIU2=2182 CVIU4=4230
+
+%term CVPU2=2198 CVPU4=4246
+
+%term CVUI1=1205 CVUI2=2229 CVUI4=4277
+%term CVUP2=2231
+%term CVUU1=1206 CVUU2=2230 CVUU4=4278
+
+%term NEGF4=4289
+%term NEGI1=1221 NEGI2=2245 NEGI4=4293
+
+%term CALLB=217
+%term CALLF4=4305
+%term CALLI1=1237 CALLI2=2261 CALLI4=4309
+%term CALLP2=2263
+%term CALLU1=1238 CALLU2=2262 CALLU4=4310
+%term CALLV=216
+
+%term RETF4=4337
+%term RETI1=1269 RETI2=2293 RETI4=4341
+%term RETP2=2295
+%term RETU1=1270 RETU2=2294 RETU4=4342
+%term RETV=248
+
+%term ADDRGP2=2311
+
+%term ADDRFP2=2327
+
+%term ADDRLP2=2343
+
+%term ADDF4=4401
+%term ADDI1=1333 ADDI2=2357 ADDI4=4405
+%term ADDP2=2359
+%term ADDU1=1334 ADDU2=2358 ADDU4=4406
+
+%term SUBF4=4417
+%term SUBI1=1349 SUBI2=2373 SUBI4=4421
+%term SUBP2=2375
+%term SUBU1=1350 SUBU2=2374 SUBU4=4422
+
+%term LSHI1=1365 LSHI2=2389 LSHI4=4437
+%term LSHU1=1366 LSHU2=2390 LSHU4=4438
+
+%term MODI1=1381 MODI2=2405 MODI4=4453
+%term MODU1=1382 MODU2=2406 MODU4=4454
+
+%term RSHI1=1397 RSHI2=2421 RSHI4=4469
+%term RSHU1=1398 RSHU2=2422 RSHU4=4470
+
+%term BANDI1=1413 BANDI2=2437 BANDI4=4485
+%term BANDU1=1414 BANDU2=2438 BANDU4=4486
+
+%term BCOMI1=1429 BCOMI2=2453 BCOMI4=4501
+%term BCOMU1=1430 BCOMU2=2454 BCOMU4=4502
+
+%term BORI1=1445 BORI2=2469 BORI4=4517
+%term BORU1=1446 BORU2=2470 BORU4=4518
+
+%term BXORI1=1461 BXORI2=2485 BXORI4=4533
+%term BXORU1=1462 BXORU2=2486 BXORU4=4534
+
+%term DIVF4=4545
+%term DIVI1=1477 DIVI2=2501 DIVI4=4549
+%term DIVU1=1478 DIVU2=2502 DIVU4=4550
+
+%term MULF4=4561
+%term MULI1=1493 MULI2=2517 MULI4=4565
+%term MULU1=1494 MULU2=2518 MULU4=4566
+
+%term EQF4=4577
+%term EQI1=1509 EQI2=2533 EQI4=4581
+%term EQU1=1510 EQU2=2534 EQU4=4582
+
+%term GEF4=4593
+%term GEI1=1525 GEI2=2549 GEI4=4597
+%term GEU1=1526 GEU2=2550 GEU4=4598
+
+%term GTF4=4609
+%term GTI1=1541 GTI2=2565 GTI4=4613
+%term GTU1=1542 GTU2=2566 GTU4=4614
+
+%term LEF4=4625
+%term LEI1=1557 LEI2=2581 LEI4=4629
+%term LEU1=1558 LEU2=2582 LEU4=4630
+
+%term LTF4=4641
+%term LTI1=1573 LTI2=2597 LTI4=4645
+%term LTU1=1574 LTU2=2598 LTU4=4646
+
+%term NEF4=4657
+%term NEI1=1589 NEI2=2613 NEI4=4661
+%term NEU1=1590 NEU2=2614 NEU4=4662
+
+%term JUMPV=584
+
+%term LABELV=600
+
+%term LOADB=233
+%term LOADF4=4321
+%term LOADI1=1253 LOADI2=2277 LOADI4=4325
+%term LOADP2=2279
+%term LOADU1=1254 LOADU2=2278 LOADU4=4326
+
+%term VREGP=711
+%%
+reg:  INDIRI1(VREGP)     "# INDIRI1\n"
+reg:  INDIRU1(VREGP)     "# INDIRU1\n"
+
+reg:  INDIRI2(VREGP)     "# INDIRI2\n"
+reg:  INDIRU2(VREGP)     "# INDIRU2\n"
+reg:  INDIRP2(VREGP)     "# INDIRP2\n"
+
+stmt: ASGNI1(VREGP,reg)  "# ASGNI1\n"
+stmt: ASGNU1(VREGP,reg)  "# ASGNU1\n"
+
+stmt: ASGNI2(VREGP,reg)  "# ASGNI2\n"
+stmt: ASGNU2(VREGP,reg)  "# ASGNU2\n"
+stmt: ASGNP2(VREGP,reg)  "# ASGNP2\n"
+
+con:  CNSTI1  "%#%a"
+con:  CNSTU1  "%#%a"
+con:  CNSTI2  "%#%a"
+con:  CNSTU2  "%#%a"
+con:  CNSTP2  "%#%a"
+con:  ADDRGP2 "%#%a"
+
+con8: CNSTI1  "%#%a"  range(a, 0, 255)
+con8: CNSTU1  "%#%a"  range(a, 0, 255)
+con8: CNSTI2  "%#%a"  range(a, 0, 255)
+con8: CNSTU2  "%#%a"  range(a, 0, 255)
+
+stmt: reg     ""
+
+reg:  ADDRGP2 "# ADDRGP2\n"  1
+reg:  ADDRFP2 "# ADDRFP2\n"  3
+reg:  ADDRLP2 "# ADDRLP2\n"  3
+
+stk:  ADDRFP2 "%a+%F(SP)"
+stk:  ADDRLP2 "%a+%F(SP)"
+
+base: con     "%0"
+base: reg     "%0"  3
+
+addr: base    "%0"
+addr: stk     "%0"
+
+mem:  INDIRI1(addr)  "# INDIRI1"
+mem:  INDIRU1(addr)  "# INDIRU1"
+
+rc:   con     "%0"
+rc:   reg     "%0"
+
+mr:   mem     "%0"  3
+mr:   reg     "%0"
+
+mrc:  mem     "%0"  3
+mrc:  rc      "%0"
+
+reg:  addr    "# addr\n"  1
+reg:  mrc     "# mrc\n"   1
+
+reg:  INDIRI1(addr)   "# INDIRI1\n"  4
+reg:  INDIRU1(addr)   "# INDIRU1\n"  4
+reg:  INDIRI2(addr)   "# INDIRI2\n"  4
+reg:  INDIRU2(addr)   "# INDIRU2\n"  4
+reg:  INDIRP2(addr)   "# INDIRP2\n"  4
+
+reg:  LOADI1(rc)      "# LOADI1\n"  move_r(a)
+reg:  LOADU1(rc)      "# LOADU1\n"  move_r(a)
+reg:  LOADI2(rc)      "# LOADI2\n"  move_r(a)
+reg:  LOADU2(rc)      "# LOADU2\n"  move_r(a)
+reg:  LOADP2(rc)      "# LOADP2\n"  move_r(a)
+
+reg:  ADDI1(reg,mrc)  "# ADDI1\n"  1
+reg:  ADDU1(reg,mrc)  "# ADDU1\n"  1
+reg:  ADDI2(reg,rc)   "# ADDI2\n"  1
+reg:  ADDU2(reg,rc)   "# ADDU2\n"  1
+reg:  ADDP2(reg,rc)   "# ADDP2\n"  1
+
+reg:  SUBI1(reg,mrc)  "# SUBI1\n"  1
+reg:  SUBU1(reg,mrc)  "# SUBU1\n"  1
+reg:  SUBI2(reg,rc)   "# SUBI2\n"  1
+reg:  SUBU2(reg,rc)   "# SUBU2\n"  1
+reg:  SUBP2(reg,rc)   "# SUBP2\n"  1
+
+reg:  BANDI1(reg,mrc) "# BANDI1\n" 1
+reg:  BANDU1(reg,mrc) "# BANDU1\n" 1
+reg:  BANDI2(reg,rc)  "# BANDI2\n" 1
+reg:  BANDU2(reg,rc)  "# BANDU2\n" 1
+
+reg:  BORI1(reg,mrc)  "# BORI1\n"  1
+reg:  BORU1(reg,mrc)  "# BORU1\n"  1
+reg:  BORI2(reg,rc)   "# BORI2\n"  1
+reg:  BORU2(reg,rc)   "# BORU2\n"  1
+
+reg:  BXORI1(reg,mrc) "# BXORI1\n" 1
+reg:  BXORU1(reg,mrc) "# BXORU1\n" 1
+reg:  BXORI2(reg,rc)  "# BXORI2\n" 1
+reg:  BXORU2(reg,rc)  "# BXORU2\n" 1
+
+reg:  BCOMI1(mr)      "# BCOMI1\n" 1
+reg:  BCOMU1(mr)      "# BCOMU1\n" 1
+reg:  BCOMI2(reg)     "# BCOMI2\n" 1
+reg:  BCOMU2(reg)     "# BCOMU2\n" 1
+
+reg:  NEGI1(mr)       "# NEGI1\n"  1
+reg:  NEGI2(reg)      "# NEGI2\n"  1
+
+rc8:  con8   "%0"
+rc8:  reg    "%0"  5
+
+reg:  LSHI1(reg,rc8)  "# LSHI1\n"   8
+reg:  LSHI2(reg,rc8)  "# LSHI2\n"   16
+reg:  LSHU1(reg,rc8)  "# LSHU1\n"   8
+reg:  LSHU2(reg,rc8)  "# LSHU2\n"   16
+
+reg:  RSHI1(reg,rc8)  "# RSHI1\n"   8
+reg:  RSHI2(reg,rc8)  "# RSHI2\n"   16
+reg:  RSHU1(reg,rc8)  "# RSHU1\n"   8
+reg:  RSHU2(reg,rc8)  "# RSHU2\n"   16
+
+reg:  MULI1(reg,reg)  "# MULI1\n"   16
+reg:  MULI2(reg,reg)  "# MULI2\n"   16
+reg:  MULU1(reg,reg)  "# MULU1\n"   16
+reg:  MULU2(reg,reg)  "# MULU2\n"   16
+
+reg:  DIVI1(reg,reg)  "# DIVI1\n"   16
+reg:  DIVI2(reg,reg)  "# DIVI2\n"   16
+reg:  DIVU1(reg,reg)  "# DIVU1\n"   16
+reg:  DIVU2(reg,reg)  "# DIVU2\n"   16
+
+reg:  MODI1(reg,reg)  "# MODI1\n"   16
+reg:  MODI2(reg,reg)  "# MODI2\n"   16
+reg:  MODU1(reg,reg)  "# MODU1\n"   16
+reg:  MODU2(reg,reg)  "# MODU2\n"   16
+
+stmt: ASGNI1(addr,ADDI1(mem,rc))    "# ADDI1\n"  memop(a)
+stmt: ASGNU1(addr,ADDU1(mem,rc))    "# ADDU1\n"  memop(a)
+stmt: ASGNI1(addr,SUBI1(mem,rc))    "# SUBI1\n"  memop(a)
+stmt: ASGNU1(addr,SUBU1(mem,rc))    "# SUBU1\n"  memop(a)
+stmt: ASGNI1(addr,BANDI1(mem,rc))   "# BANDI1\n" memop(a)
+stmt: ASGNU1(addr,BANDU1(mem,rc))   "# BANDU1\n" memop(a)
+stmt: ASGNI1(addr,BORI1(mem,rc))    "# BORI1\n"  memop(a)
+stmt: ASGNU1(addr,BORU1(mem,rc))    "# BORU1\n"  memop(a)
+stmt: ASGNI1(addr,BXORI1(mem,rc))   "# BXORI1\n" memop(a)
+stmt: ASGNU1(addr,BXORU1(mem,rc))   "# BXORU1\n" memop(a)
+stmt: ASGNI1(addr,BCOMI1(mem))      "# BCOMI1\n" memop(a)
+stmt: ASGNU1(addr,BCOMU1(mem))      "# BCOMU1\n" memop(a)
+stmt: ASGNI1(addr,NEGI1(mem))       "# NEGI1\n"  memop(a)
+stmt: ASGNI1(addr,LSHI1(mem,con8))  "# LSHI1\n"  memop(a)
+stmt: ASGNU1(addr,LSHU1(mem,con8))  "# LSHU1\n"  memop(a)
+stmt: ASGNI1(addr,RSHI1(mem,con8))  "# RSHI1\n"  memop(a)
+stmt: ASGNU1(addr,RSHU1(mem,con8))  "# RSHU1\n"  memop(a)
+
+reg:  CVII1(reg)  "# CVII1\n"  1
+reg:  CVIU1(reg)  "# CVIU1\n"  1
+reg:  CVUI1(reg)  "# CVUI1\n"  1
+reg:  CVUU1(reg)  "# CVUU1\n"  1
+
+reg:  CVII2(reg)  "# CVII2\n"  1
+reg:  CVIU2(reg)  "# CVIU2\n"  1
+reg:  CVUI2(reg)  "# CVUI2\n"  1
+reg:  CVUU2(reg)  "# CVUU2\n"  1
+
+reg:  CVUP2(reg)  "# CVUP2\n"  1
+reg:  CVPU2(reg)  "# CVPU2\n"  1
+
+stmt: ASGNI1(addr,rc)  "# ASGNI1\n"   3
+stmt: ASGNU1(addr,rc)  "# ASGNU1\n"   3
+stmt: ASGNI2(addr,rc)  "# ASGNI2\n"   3
+stmt: ASGNU2(addr,rc)  "# ASGNU2\n"   3
+stmt: ASGNP2(addr,rc)  "# ASGNP2\n"   3
+stmt: ASGNI1(stk,rc)   "# ASGNI1\n"   1
+stmt: ASGNU1(stk,rc)   "# ASGNU1\n"   1
+stmt: ASGNI2(stk,rc)   "# ASGNI2\n"   1
+stmt: ASGNU2(stk,rc)   "# ASGNU2\n"   1
+stmt: ASGNP2(stk,rc)   "# ASGNP2\n"   1
+
+stmt: ARGI1(mrc)  "# ARGI1\n"  1
+stmt: ARGU1(mrc)  "# ARGU1\n"  1
+stmt: ARGI2(reg)  "# ARGI2\n"  1
+stmt: ARGU2(reg)  "# ARGU2\n"  1
+stmt: ARGP2(reg)  "# ARGP2\n"  1
+
+stmt: ASGNB(reg,INDIRB(reg))  "# ASGNB\n"
+stmt: ARGB(INDIRB(reg))       "# ARGB\n"
+
+addrj: ADDRGP2 "%a"
+addrj: reg     "(%0)"  2
+
+stmt: JUMPV(addrj)  "# JUMPV\n" 3
+stmt: LABELV        "# LABELV\n"
+
+stmt: EQI1(reg,mrc) "# EQI1\n"  3
+stmt: EQU1(reg,mrc) "# EQU1\n"  3
+stmt: NEI1(reg,mrc) "# NEI1\n"  3
+stmt: NEU1(reg,mrc) "# NEU1\n"  3
+
+stmt: GEI1(reg,mrc) "# GEI1\n"  4
+stmt: GEU1(reg,mrc) "# GEU1\n"  4
+stmt: LTI1(reg,mrc) "# LTI1\n"  4
+stmt: LTU1(reg,mrc) "# LTU1\n"  4
+
+stmt: GTI1(reg,mrc) "# GTI1\n"  5
+stmt: GTU1(reg,mrc) "# GTU1\n"  5
+stmt: LEI1(reg,mrc) "# LEI1\n"  5
+stmt: LEU1(reg,mrc) "# LEU1\n"  5
+
+stmt: EQI1(mem,con) "# EQI1\n"  2
+stmt: EQU1(mem,con) "# EQU1\n"  2
+stmt: NEI1(mem,con) "# NEI1\n"  2
+stmt: NEU1(mem,con) "# NEU1\n"  2
+
+stmt: GEI1(mem,con) "# GEI1\n"  3
+stmt: GEU1(mem,con) "# GEU1\n"  3
+stmt: LTI1(mem,con) "# LTI1\n"  3
+stmt: LTU1(mem,con) "# LTU1\n"  3
+
+stmt: GTI1(mem,con) "# GTI1\n"  4
+stmt: GTU1(mem,con) "# GTU1\n"  4
+stmt: LEI1(mem,con) "# LEI1\n"  4
+stmt: LEU1(mem,con) "# LEU1\n"  4
+
+stmt: EQI2(reg,rc)  "# EQI2\n"  6
+stmt: EQU2(reg,rc)  "# EQU2\n"  6
+stmt: NEI2(reg,rc)  "# NEI2\n"  6
+stmt: NEU2(reg,rc)  "# NEU2\n"  6
+
+stmt: GEI2(reg,rc)  "# GEI2\n"  7
+stmt: GEU2(reg,rc)  "# GEU2\n"  7
+stmt: LTI2(reg,rc)  "# LTI2\n"  7
+stmt: LTU2(reg,rc)  "# LTU2\n"  7
+
+stmt: GTI2(reg,rc)  "# GTI2\n"  8
+stmt: GTU2(reg,rc)  "# GTU2\n"  8
+stmt: LEI2(reg,rc)  "# LEI2\n"  8
+stmt: LEU2(reg,rc)  "# LEU2\n"  8
+
+reg:  CALLI1(addrj) "# CALLI1\n"
+reg:  CALLU1(addrj) "# CALLU1\n"
+reg:  CALLI2(addrj) "# CALLI2\n"
+reg:  CALLU2(addrj) "# CALLU2\n"
+reg:  CALLP2(addrj) "# CALLP2\n"
+stmt: CALLV(addrj)  "# CALLV\n"
+
+stmt: RETI1(reg)    "# RETI1\n"
+stmt: RETU1(reg)    "# RETU1\n"
+stmt: RETI2(reg)    "# RETI2\n"
+stmt: RETU2(reg)    "# RETU2\n"
+stmt: RETP2(reg)    "# RETP2\n"
+stmt: RETV(reg)     "# RETV\n"
+
+reg:  INDIRI4(VREGP)    "# INDIRI4\n"
+reg:  INDIRU4(VREGP)    "# INDIRU4\n"
+reg:  INDIRF4(VREGP)    "# INDIRF4\n"
+
+stmt: ASGNI4(VREGP,reg) "# ASGNI4\n"
+stmt: ASGNU4(VREGP,reg) "# ASGNU4\n"
+stmt: ASGNF4(VREGP,reg) "# ASGNF4\n"
+
+reg:  INDIRI4(addr)     "# INDIRI4\n" 8
+reg:  INDIRU4(addr)     "# INDIRU4\n" 8
+reg:  INDIRF4(addr)     "# INDIRF4\n" 8
+memf: INDIRI4(ADDRGP2)  "# INDIRI4"
+memf: INDIRU4(ADDRGP2)  "# INDIRU4"
+memf: INDIRF4(ADDRGP2)  "# INDIRF4"
+miaf: INDIRI4(addr)     "# INDIRI4"
+miaf: INDIRU4(addr)     "# INDIRU4"
+miaf: INDIRF4(addr)     "# INDIRF4"
+
+mrf:  memf    "%0"  3
+mrf:  reg     "%0"
+
+maf:  memf    "%0"  3
+maf:  miaf    "%0"  3
+
+stmt: ASGNI4(addr,mrf)  "# ASGNI4\n"
+stmt: ASGNU4(addr,mrf)  "# ASGNU4\n"
+stmt: ASGNF4(addr,mrf)  "# ASGNF4\n"
+
+stmt: ARGI4(maf)         "# ARGI4\n"
+stmt: ARGU4(maf)         "# ARGU4\n"
+stmt: ARGF4(maf)         "# ARGF4\n"
+
+reg:  CVFF4(maf)        "# CVFF4\n"  16
+reg:  CVFI1(maf)        "# CVFI1\n"  16
+reg:  CVFI2(maf)        "# CVFI2\n"  16
+reg:  CVFI4(maf)        "# CVFI4\n"  16
+reg:  CVIF4(reg)        "# CVIF4\n"  16
+
+reg:  CVII4(reg)        "# CVII4\n"  12
+reg:  CVIU4(reg)        "# CVIU4\n"  12
+reg:  CVUI4(reg)        "# CVUI4\n"  12
+reg:  CVUU4(reg)        "# CVUU4\n"  12
+reg:  CVPU4(reg)        "# CVPU4\n"  12
+
+reg: NEGI4(maf)         "# NEGI4\n"  32
+reg: NEGF4(maf)         "# NEGF4\n"  32
+
+reg: BCOMI4(maf)        "# BCOMI4\n" 32
+reg: BCOMU4(maf)        "# BCOMU4\n" 32
+
+reg: LSHI4(reg,rc8)     "# LSHI4\n"  16
+reg: LSHU4(reg,rc8)     "# LSHU4\n"  16
+
+reg: RSHI4(reg,rc8)     "# RSHI4\n"  16
+reg: RSHU4(reg,rc8)     "# RSHU4\n"  16
+
+reg: MODI4(maf,maf)     "# MODI4\n"  32
+reg: MODU4(maf,maf)     "# MODU4\n"  32
+
+reg: BANDI4(maf,maf)    "# BANDI4\n" 32
+reg: BANDU4(maf,maf)    "# BANDU4\n" 32
+
+reg: BORI4(maf,maf)     "# BORI4\n"  32
+reg: BORU4(maf,maf)     "# BORU4\n"  32
+
+reg: BXORI4(maf,maf)    "# BXORI4\n" 32
+reg: BXORU4(maf,maf)    "# BXORU4\n" 32
+
+reg: ADDI4(maf,maf)     "# ADDI4\n"  32
+reg: ADDU4(maf,maf)     "# ADDU4\n"  32
+reg: ADDF4(maf,maf)     "# ADDF4\n"  32
+
+reg: SUBI4(maf,maf)     "# SUBI4\n"  32
+reg: SUBU4(maf,maf)     "# SUBU4\n"  32
+reg: SUBF4(maf,maf)     "# SUBF4\n"  32
+
+reg: MULI4(maf,maf)     "# MULI4\n"  32
+reg: MULU4(maf,maf)     "# MULU4\n"  32
+reg: MULF4(maf,maf)     "# MULF4\n"  32
+
+reg: DIVI4(maf,maf)     "# DIVI4\n"  32
+reg: DIVU4(maf,maf)     "# DIVU4\n"  32
+reg: DIVF4(maf,maf)     "# DIVF4\n"  32
+
+stmt: ASGNI4(addr,NEGI4(maf))      "# NEGI4\n"  16
+stmt: ASGNF4(addr,NEGF4(maf))      "# NEGF4\n"  16
+
+stmt: ASGNI4(addr,BCOMI4(maf))     "# BCOMI4\n" 16
+stmt: ASGNF4(addr,BCOMU4(maf))     "# BCOMU4\n" 16
+
+stmt: ASGNI4(addr,ADDI4(maf,maf))  "# ADDI4\n"  16
+stmt: ASGNU4(addr,ADDU4(maf,maf))  "# ADDU4\n"  16
+stmt: ASGNF4(addr,ADDF4(maf,maf))  "# ADDF4\n"  16
+
+stmt: ASGNI4(addr,SUBI4(maf,maf))  "# SUBI4\n"  16
+stmt: ASGNU4(addr,SUBU4(maf,maf))  "# SUBU4\n"  16
+stmt: ASGNF4(addr,SUBF4(maf,maf))  "# SUBF4\n"  16
+
+stmt: ASGNI4(addr,MULI4(maf,maf))  "# MULI4\n"  16
+stmt: ASGNU4(addr,MULU4(maf,maf))  "# MULU4\n"  16
+stmt: ASGNF4(addr,MULF4(maf,maf))  "# MULF4\n"  16
+
+stmt: ASGNI4(addr,DIVI4(maf,maf))  "# DIVI4\n"  16
+stmt: ASGNU4(addr,DIVU4(maf,maf))  "# DIVU4\n"  16
+stmt: ASGNF4(addr,DIVF4(maf,maf))  "# DIVF4\n"  16
+
+stmt: ASGNI4(addr,MODI4(maf,maf))  "# MODI4\n"  16
+stmt: ASGNU4(addr,MODU4(maf,maf))  "# MODU4\n"  16
+
+stmt: ASGNI4(addr,BANDI4(maf,maf)) "# BANDI4\n" 16
+stmt: ASGNU4(addr,BANDU4(maf,maf)) "# BANDU4\n" 16
+
+stmt: ASGNI4(addr,BORI4(maf,maf))  "# BORI4\n"  16
+stmt: ASGNU4(addr,BORU4(maf,maf))  "# BORU4\n"  16
+
+stmt: ASGNI4(addr,BXORI4(maf,maf)) "# BXORI4\n" 16
+stmt: ASGNU4(addr,BXORU4(maf,maf)) "# BXORU4\n" 16
+
+stmt: EQI4(maf,maf)     "# EQI4\n"
+stmt: EQU4(maf,maf)     "# EQU4\n"
+stmt: EQF4(maf,maf)     "# EQF4\n"
+
+stmt: NEI4(maf,maf)     "# NEI4\n"
+stmt: NEU4(maf,maf)     "# NEU4\n"
+stmt: NEF4(maf,maf)     "# NEF4\n"
+
+stmt: GEI4(maf,maf)     "# GEI4\n"
+stmt: GEU4(maf,maf)     "# GEU4\n"
+stmt: GEF4(maf,maf)     "# GEF4\n"
+
+stmt: GTI4(maf,maf)     "# GTI4\n"
+stmt: GTU4(maf,maf)     "# GTU4\n"
+stmt: GTF4(maf,maf)     "# GTF4\n"
+
+stmt: LEI4(maf,maf)     "# LEI4\n"
+stmt: LEU4(maf,maf)     "# LEU4\n"
+stmt: LEF4(maf,maf)     "# LEF4\n"
+
+stmt: LTI4(maf,maf)     "# LTI4\n"
+stmt: LTU4(maf,maf)     "# LTU4\n"
+stmt: LTF4(maf,maf)     "# LTF4\n"
+
+reg: CALLI4(addrj)      "# CALLI4\n"
+reg: CALLU4(addrj)      "# CALLU4\n"
+reg: CALLF4(addrj)      "# CALLF4\n"
+
+stmt: RETI4(reg)        "# RETI4\n"
+stmt: RETU4(reg)        "# RETU4\n"
+stmt: RETF4(reg)        "# RETF4\n"
+%%
+
+static void progbeg(int argc, char *argv[]) {
+	int i;
+
+	{
+		union {
+			char c;
+			int i;
+		} u;
+		u.i = 0;
+		u.c = 1;
+		swap = ((int)(u.i == 1)) != IR->little_endian;
+	}
+	parseflags(argc, argv);
+	rom_bank_str[0] = ram_bank_str[0] = 0;
+	debug = 0;
+	optimize = 0;
+	comments = 0;
+	for(i = 0; i < argc; i++) {
+		if(strncmp(argv[i], "-BO", 3) == 0 || strncmp(argv[i], "-bo", 3) == 0) {
+			sprintf(rom_bank_str, "_%d", atoi(argv[i] + 3));
+		} else if(strncmp(argv[i], "-BA", 3) == 0 || strncmp(argv[i], "-ba", 3) == 0) {
+			sprintf(ram_bank_str, "_%d (OVR)", atoi(argv[i] + 3));
+		} else if(strcmp(argv[i], "-debug") == 0 || strcmp(argv[i], "-DEBUG") == 0) {
+			debug = 1;
+			comments = 1;
+			glevel = 2;
+		} else if(strcmp(argv[i], "-optimize") == 0 || strcmp(argv[i], "-OPTIMIZE") == 0) {
+			optimize = 1;
+		} else if(strcmp(argv[i], "-comments") == 0 || strcmp(argv[i], "-COMMENTS") == 0) {
+			comments = 1;
+			glevel = 2;
+		}
+	}
+
+	for(i = 0; i < NBWREG; i++)
+		/* Mask is 0b1001 = 9 */
+		reg16[i] = mkreg(wreg[i], i, 9, IREG);
+
+	for(i = 0; i < NBBREG; i++)
+		reg8[i] = mkreg(breg[i], i, 1, IREG);
+
+	for(i = 0; i < NBXREG; i++)
+		reg32[i] = mkreg(xreg[i], i, 1, FREG);
+
+	reg8w = mkwildcard(reg8);
+	reg16w = mkwildcard(reg16);
+	reg32w = mkwildcard(reg32);
+
+#ifdef GAMEBOY
+	tmask[IREG] = reg16[BC]->x.regnode->mask | reg16[DE]->x.regnode->mask;
+#else
+	tmask[IREG] = reg16[BC]->x.regnode->mask | reg16[DE]->x.regnode->mask | reg16[HL]->x.regnode->mask;
+#endif
+	vmask[IREG] = 0;
+	tmask[FREG] = 0xFE;
+	vmask[FREG] = 0;
+
+#ifdef GAMEBOY
+	print("\t;; File generated by GBDK 2.0, P. Felber, 1995-1998\n");
+#else
+	print("\t;; File generated by Z80DK 2.0, P. Felber, 1995-1998\n");
+#endif
+	print("\n");
+#ifdef GAMEBOY
+#else
+	print("\t.globl\t.c_entry, .c_exit\n");
+#endif
+	print("\n");
+	print("\t;; Ordering of segments for the linker\n");
+	print("\t.area\t_CODE%s\n", rom_bank_str);
+	print("\t.area\t_DATA%s\n", rom_bank_str);
+	print("\t.area\t_LIT%s\n", rom_bank_str);
+	print("\t.area\t_BSS%s\n", ram_bank_str);
+	print("\n");
+
+	cseg = 0;
+	argstack = 0;
+	if(optimize) {
+		int i;
+		for(i = 0; i < nb_rules; i++)
+			rules[i] = 0;
+	}
+}
+
+static Symbol rmap(int opk) {
+	switch(optype(opk)) {
+	case B: case P:
+		return reg16w;
+	case I: case U:
+		if(opsize(opk) == 1)
+			return reg8w;
+		else if(opsize(opk) == 2)
+			return reg16w;
+		else
+			return reg32w;
+	case F:
+		return reg32w;
+	default:
+		return 0;
+	}
+}
+
+static void segment(int n) {
+	if(n == cseg)
+		return;
+	generate();
+	if(cseg == CODE)
+		print("\t;; _CODE%s ends\n", rom_bank_str);
+	else if(cseg == LIT)
+		print("\t;; _LIT%s ends\n", rom_bank_str);
+	else if(cseg == DATA)
+		print("\t;; _DATA%s ends\n", rom_bank_str);
+	else if(cseg == BSS)
+		print("\t;; _BSS%s ends\n", ram_bank_str);
+	cseg = n;
+	if(cseg == CODE)
+		print("\t.area\t_CODE%s\n", rom_bank_str);
+	else if(cseg == LIT)
+		print("\t.area\t_LIT%s\n", rom_bank_str);
+	else if(cseg == DATA)
+		print("\t.area\t_DATA%s\n", rom_bank_str);
+	else if(cseg == BSS)
+		print("\t.area\t_BSS%s\n", ram_bank_str);
+}
+
+static void progend(void) {
+	segment(0);
+	generate();
+	if(optimize && comments) {
+		int i;
+		print("\t;; Optimization summary\n");
+		for(i = 0; i < nb_rules; i++)
+			print("\t;;   Rule %d: %d\n", i, rules[i]);
+	}
+	print("\t;; End of program\n");
+}
+
+#ifdef GAMEBOY
+#define HARDWARE_REG_STR "__reg_"
+#define HARDWARE_REG_LEN 6
+#define HARDWARE_REG(addr) (!strncmp(addr, HARDWARE_REG_STR, HARDWARE_REG_LEN))
+#endif
+
+#define LEFT_NODE(p) LEFT_CHILD(p)
+#define RIGHT_NODE(p) RIGHT_CHILD(p)
+
+#define REG(p)  (getregnum(p))
+#define LEFT_CHILD_REG(p)  (REG(LEFT_CHILD(p)))
+#define RIGHT_CHILD_REG(p)  (REG(RIGHT_CHILD(p)))
+#define LEFT_X_CHILD_REG(p)  (REG(LEFT_X_CHILD(p)))
+#define RIGHT_X_CHILD_REG(p)  (REG(RIGHT_X_CHILD(p)))
+#define LEFT_REG(p) \
+	(p->kids[0]->x.registered ? LEFT_CHILD_REG(p) : \
+	(p->x.kids[0] ? LEFT_X_CHILD_REG(p) : LEFT_CHILD_REG(p)))
+#define RIGHT_REG(p) \
+	(p->kids[1]->x.registered ? RIGHT_CHILD_REG(p) : \
+	(p->x.kids[1] ? RIGHT_X_CHILD_REG(p) : RIGHT_CHILD_REG(p)))
+
+#define VAL(p) \
+	((generic(p->op) == CNST \
+	|| specific(p->op) == ADDRG+P) ? \
+	p->syms[0]->x.name : \
+	p->syms[RX]->u.t.cse->syms[0]->x.name)
+#define RIGHT_VAL(p) VAL(p->kids[1])
+#define LEFT_VAL(p) VAL(p->kids[0])
+
+#define IS_CONST(p) \
+	(!p->x.registered \
+	&& (generic(p->op) == CNST \
+	|| (generic(p->op) == INDIR \
+	&& p->kids[0]->op == VREG+P \
+	&& p->syms[RX]->u.t.cse \
+	&& generic(p->syms[RX]->u.t.cse->op) == CNST)))
+#define IS_RIGHT_CONST(p) IS_CONST(p->kids[1])
+#define IS_LEFT_CONST(p) IS_CONST(p->kids[0])
+
+#define IS_ADDRGP(p) \
+	(!p->x.registered \
+	&& (specific(p->op) == ADDRG+P \
+	|| (generic(p->op) == INDIR \
+	&& p->kids[0]->op == VREG+P \
+	&& p->syms[RX]->u.t.cse \
+	&& specific(p->syms[RX]->u.t.cse->op) == ADDRG+P)))
+#define IS_RIGHT_ADDRGP(p) IS_ADDRGP(p->kids[1])
+#define IS_LEFT_ADDRGP(p) IS_ADDRGP(p->kids[0])
+
+#define IS_INDIR(p) \
+	(generic(p->op) == INDIR \
+	&& !p->x.registered \
+	&& p->kids[0]->op != VREG+P)
+#define IS_RIGHT_INDIR(p) (IS_INDIR(p->kids[1]))
+#define IS_LEFT_INDIR(p) (IS_INDIR(p->kids[0]))
+
+#define IS_ADDRFP(p) \
+	(specific(p->op) == ADDRF+P)
+#define IS_RIGHT_ADDRFP(p) IS_ADDRFP(p->kids[1])
+#define IS_LEFT_ADDRFP(p) IS_ADDRFP(p->kids[0])
+
+#define IS_ADDRLP(p) \
+	(specific(p->op) == ADDRL+P)
+#define IS_RIGHT_ADDRLP(p) IS_ADDRLP(p->kids[1])
+#define IS_LEFT_ADDRLP(p) IS_ADDRLP(p->kids[0])
+
+static void target(Node p) {
+	assert(p);
+	switch(specific(p->op)) {
+
+#ifdef GAMEBOY
+		case CALL+I: case CALL+U: case CALL+P: case CALL+V: case CALL+F:
+			if(specific(p->op) != CALL+V) {
+				if(opsize(p->op) == 1) {
+					setreg(p, reg8[_E]);
+				} else if(opsize(p->op) == 2) {
+					setreg(p, reg16[DE]);
+				} else if(opsize(p->op) == 4) {
+					setreg(p, reg32[0]);
+				}
+			}
+			if(!IS_LEFT_CONST(p))
+				rtarget(p, 0, reg16[HL]);
+			break;
+		case RET+I: case RET+U: case RET+P: case RET+F:
+			if(opsize(p->op) == 1) {
+				rtarget(p, 0, reg8[_E]);
+			} else if(opsize(p->op) == 2) {
+				rtarget(p, 0, reg16[DE]);
+			} else if(opsize(p->op) == 4) {
+				rtarget(p, 0, reg32[0]);
+			}
+			break;
+#else
+		case ASGN+B:
+			rtarget(p, 0, reg16[DE]);
+			rtarget(p->kids[1], 0, reg16[HL]);
+			break;
+		case ARG+B:
+			rtarget(p->kids[0], 0, reg16[DE]);
+			break;
+		case ARG+I: case ARG+U: case ARG+P: case ARG+F: {
+			Symbol sym;
+			Node call;
+			int argno = 0;
+
+			for(call = p->link; call && generic(call->op) != CALL; call = call->link)
+				argno++;
+			assert(call && call->kids[0] && call->kids[0]->syms[0]);
+			sym = argreg(call->kids[0]->syms[0], p->op, p->link->op, argno);
+			if(sym && opsize(p->op) <= 2)
+				rtarget(p, 0, sym);
+			break;
+		}
+		case CALL+I: case CALL+U: case CALL+P: case CALL+V: case CALL+F:
+			if(specific(p->op) != CALL+V) {
+				if(opsize(p->op) == 1) {
+					setreg(p, reg8[_L]);
+				} else if(opsize(p->op) == 2) {
+					setreg(p, reg16[HL]);
+				} else if(opsize(p->op) == 4) {
+					setreg(p, reg32[0]);
+				}
+			}
+			if(!IS_LEFT_CONST(p))
+				rtarget(p, 0, reg16[HL]);
+			break;
+		case RET+I: case RET+U: case RET+P: case RET+F:
+			if(opsize(p->op) == 1) {
+				rtarget(p, 0, reg8[_L]);
+			} else if(opsize(p->op) == 2) {
+				rtarget(p, 0, reg16[HL]);
+			} else if(opsize(p->op) == 4) {
+				rtarget(p, 0, reg32[0]);
+			}
+			break;
+/*
+		case ADDRF+P: case ADDRL+P:
+			setreg(p, reg16[HL]);
+			break;
+*/
+#endif
+		case JUMP+V:
+			if(!IS_LEFT_CONST(p))
+				rtarget(p, 0, reg16[HL]);
+			break;
+/*
+		case ADD+I: case ADD+U: case ADD+P:
+			if(opsize(p->op) == 2 && !IS_RIGHT_CONST(p) && !IS_RIGHT_ADDRGP(p)) {
+				setreg(p, reg16[HL]);
+				rtarget(p, 0, reg16[HL]);
+			}
+			break;
+*/
+		case MUL+I: case MUL+U:
+			if(opsize(p->op) == 1) {
+				setreg(p, reg8[_E]);
+				rtarget(p, 0, reg8[_C]);
+				rtarget(p, 1, reg8[_E]);
+			} else if(opsize(p->op) == 2) {
+				setreg(p, reg16[DE]);
+				rtarget(p, 0, reg16[BC]);
+				rtarget(p, 1, reg16[DE]);
+			}
+			break;
+		case DIV+I: case DIV+U:
+			if(opsize(p->op) == 1) {
+				setreg(p, reg8[_C]);
+				rtarget(p, 0, reg8[_C]);
+				rtarget(p, 1, reg8[_E]);
+			} else if(opsize(p->op) == 2) {
+				setreg(p, reg16[BC]);
+				rtarget(p, 0, reg16[BC]);
+				rtarget(p, 1, reg16[DE]);
+			}
+			break;
+		case MOD+I: case MOD+U:
+			if(opsize(p->op) == 1) {
+				setreg(p, reg8[_E]);
+				rtarget(p, 0, reg8[_C]);
+				rtarget(p, 1, reg8[_E]);
+			} else if(opsize(p->op) == 2) {
+				setreg(p, reg16[DE]);
+				rtarget(p, 0, reg16[BC]);
+				rtarget(p, 1, reg16[DE]);
+			}
+			break;
+		case LSH+I: case LSH+U: case RSH+I: case RSH+U:
+			if(generic(RIGHT_NODE(p)->op) != CNST) {
+				if(opsize(p->op) == 1) {
+					setreg(p, reg8[_C]);
+					rtarget(p, 0, reg8[_C]);
+				} else if(opsize(p->op) == 2) {
+					setreg(p, reg16[BC]);
+					rtarget(p, 0, reg16[BC]);
+				}
+			}
+			break;
+		case CVF+I:
+			if(opsize(LEFT_NODE(p)->op) == 1) {
+				setreg(p, reg8[_E]);
+			} else if(opsize(LEFT_NODE(p)->op) == 2) {
+				setreg(p, reg16[DE]);
+			}
+			break;
+		case CVI+I: case CVI+U: case CVU+I: case CVU+U: case CVP+U: case CVI+F:
+			if(opsize(p->op) == 4) {
+				if(opsize(LEFT_NODE(p)->op) == 1) {
+					rtarget(p, 0, reg8[_E]);
+				} else if(opsize(LEFT_NODE(p)->op) == 2) {
+					rtarget(p, 0, reg16[DE]);
+				}
+			}
+			break;
+	}
+}
+
+static void clobber(Node p) {
+	static int nstack = 0;
+
+	assert(p);
+
+	nstack = ckstack(p, nstack);
+	assert(p->count > 0 || nstack == 0);
+
+	switch (p->op) {
+#ifdef GAMEBOY
+#else
+		case ASGN+B:
+			spill(reg16[BC]->x.regnode->mask, IREG, p);
+			break;
+		case ARG+B:
+			spill(reg16[BC]->x.regnode->mask | reg16[HL]->x.regnode->mask, IREG, p);
+			break;
+		case ARG+I: case ARG+U: case ARG+P: case ARG+F: {
+			Symbol sym;
+			Node call;
+			int argno = 0;
+
+			for(call = p->link; call && generic(call->op) != CALL; call = call->link)
+				argno++;
+			assert(call && call->kids[0] && call->kids[0]->syms[0]);
+			sym = argreg(call->kids[0]->syms[0], p->op, p->link->op, argno);
+			if(sym && opsize(p->op) == 4)
+				spill(reg16[BC]->x.regnode->mask | reg16[DE]->x.regnode->mask, IREG, p);
+			break;
+		}
+#endif
+		case MUL+I: case MUL+U:
+			if(opsize(p->op) == 1)
+				spill((1<<B_) | (1<<D_), IREG, p);
+			break;
+		case DIV+I: case DIV+U:
+			if(opsize(p->op) == 1)
+				spill((1<<B_) | (1<<D_) | (1<<_E), IREG, p);
+			else
+				spill((1<<D_) | (1<<_E), IREG, p);
+			break;
+		case MOD+I: case MOD+U:
+			if(opsize(p->op) == 1)
+				spill((1<<B_) | (1<<_C) | (1<<D_), IREG, p);
+			else
+				spill((1<<B_) | (1<<_C), IREG, p);
+			break;
+		case LSH+I: case LSH+U:
+		case RSH+I: case RSH+U:
+			if(opsize(p->op) == 1)
+				spill((1<<B_), IREG, p);
+			break;
+		case CVF+I:
+			if(opsize(p->op) == 1)
+				spill((1<<D_), IREG, p);
+			break;
+		case CVI+I:
+		case CVI+U:
+		case CVU+I:
+		case CVU+U:
+		case CVP+U:
+		case CVI+F:
+			if(opsize(LEFT_NODE(p)->op) == 1)
+				spill((1<<D_), IREG, p);
+			break;
+	}
+}
+
+static int memop(Node p) {
+        assert(p);
+        assert(generic(p->op) == ASGN);
+        assert(p->kids[0]);
+        assert(p->kids[1]);
+        if(generic(p->kids[1]->kids[0]->op) == INDIR
+        && sametree(p->kids[0], p->kids[1]->kids[0]->kids[0]))
+                return 1;
+        else
+                return LBURG_MAX;
+}
+
+static int sametree(Node p, Node q) {
+        return p == NULL && q == NULL
+        || p && q && p->op == q->op && p->syms[0] == q->syms[0]
+                && sametree(p->kids[0], q->kids[0])
+                && sametree(p->kids[1], q->kids[1]);
+}
+
+int move_r(Node p) {
+	if(!IS_LEFT_CONST(p) && !IS_LEFT_ADDRGP(p))
+		move(p);
+	return 1;
+}
+
+static void debug_node(Node p) {
+	int i, j;
+												comment(STR(" %s", opname(p->op)));
+												comment(STR(" #%d %s (%x)", p->x.inst, opname(p->op), (char *)p));
+	for(i = 0; i < NELEMS(p->kids) && p->kids[i]; i++) {
+												comment(STR("  kids[%d]: #%d %s (%x)", i, p->kids[i]->x.inst, opname(p->kids[i]->op), (char *)p->kids[i]));
+		for(j = 0; j < 3; j++) {
+			if(p->kids[i]->syms[j] && p->kids[i]->syms[j]->x.name)
+												comment(STR("   syms[%d]: %s", j, p->kids[i]->syms[j]->x.name));
+		}
+	}
+	for(i = 0; i < NELEMS(p->x.kids) && p->x.kids[i]; i++) {
+												comment(STR("  x.kids[%d]: #%d %s (%x)", i, p->x.kids[i]->x.inst, opname(p->x.kids[i]->op), (char *)p->x.kids[i]));
+		for(j = 0; j < 3; j++) {
+			if(p->x.kids[i]->syms[j] && p->x.kids[i]->syms[j]->x.name)
+												comment(STR("   syms[%d]: %s", j, p->x.kids[i]->syms[j]->x.name));
+		}
+	}
+	for(i = 0; i < 3; i++) {
+		if(p->syms[i] && p->syms[i]->x.name)
+												comment(STR("  syms[%d]: %s", i, p->syms[i]->x.name));
+	}
+												comment(STR("Freemask is %x", freereg));
+}
+
+static void emit2(Node p) {
+	freereg = p->x.freemask[IREG];
+	if(debug)
+		debug_node(p);
+
+	switch(p->op) {
+		case INDIR+I+sizeop(1):
+		case INDIR+U+sizeop(1):
+		if(LEFT_NODE(p)->op == VREG+P)
+			break;
+		{
+			int dreg = REG(p);
+			char *dst = breg[dreg];
+												comment(STR("Load %s", dst));
+			if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+				int off = const_val(LEFT_NODE(p));
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+												op2("LD", dst, "(HL)");
+#else
+												op2("LD", dst, STR("%d(IX)", off));
+#endif
+			} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+				char *addr = LEFT_VAL(p);
+#ifdef GAMEBOY
+				if(HARDWARE_REG(addr)) {
+												op2("LDH", "A", STR("(%s)", addr + HARDWARE_REG_LEN));
+												op2("LD", dst, "A");
+				} else
+#endif
+				{
+												op2("LD", "A", STR("(%s)", addr));
+												op2("LD", dst, "A");
+				}
+			} else {
+				int sreg = LEFT_REG(p);
+				if(sreg == HL) {
+												op2("LD", dst, "(HL)");
+				} else {
+												op2("LD", "A", STR("(%s)", wreg[sreg]));
+												op2("LD", dst, "A");
+				}
+			}
+			break;
+		}
+		case INDIR+I+sizeop(2):
+		case INDIR+U+sizeop(2):
+		case INDIR+P+sizeop(2):
+		if(LEFT_NODE(p)->op == VREG+P)
+			break;
+		{
+			int dreg = REG(p);
+												comment(STR("Load %s", wreg[dreg]));
+			if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+				int off = const_val(LEFT_NODE(p));
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+												op2("LD", "A", "(HL+)");
+												op2("LD", hreg[dreg], "(HL)");
+												op2("LD", lreg[dreg], "A");
+#else
+												op2("LD", lreg[dreg], STR("%d(IX)", off));
+				off++;
+												op2("LD", hreg[dreg], STR("%d(IX)", off));
+#endif
+			} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+				char *addr = LEFT_VAL(p);
+#ifdef GAMEBOY
+				if(HARDWARE_REG(addr)) {
+												op2("LDH", "A", STR("(%s+1)", addr + HARDWARE_REG_LEN));
+												op2("LD", hreg[dreg], "A");
+												op2("LDH", "A", STR("(%s)", addr + HARDWARE_REG_LEN));
+												op2("LD", lreg[dreg], "A");
+				} else {
+												op2("LD", "A", STR("(%s+1)", addr));
+												op2("LD", hreg[dreg], "A");
+												op2("LD", "A", STR("(%s)", addr));
+												op2("LD", lreg[dreg], "A");
+				}
+#else
+												op2("LD", wreg[dreg], STR("(%s)", addr));
+#endif
+			} else {
+				int sreg = LEFT_REG(p);
+#ifdef GAMEBOY
+				if(sreg == HL) {
+												op2("LD", "A", "(HL+)");
+												op2("LD", hreg[dreg], "(HL)");
+												op2("LD", lreg[dreg], "A");
+				} else {
+												op2("LD", "H", hreg[sreg]);
+												op2("LD", "L", lreg[sreg]);
+												op2("LD", "A", "(HL+)");
+												op2("LD", hreg[dreg], "(HL)");
+												op2("LD", lreg[dreg], "A");
+				}
+#else
+				if(sreg == HL) {
+					if(dreg == HL) {
+												op2("LD", "A", "(HL)");
+												op1("INC", "HL");
+												op2("LD", "H", "(HL)");
+												op2("LD", "L", "A");
+					} else {
+												op2("LD", lreg[dreg], "(HL)");
+												op1("INC", "HL");
+												op2("LD", hreg[dreg], "(HL)");
+					}
+				} else {
+												op1("PUSH", wreg[sreg]);
+												op1("POP", "IY");
+												op2("LD", hreg[dreg], "0(IY)");
+												op2("LD", lreg[dreg], "1(IY)");
+				}
+#endif
+			}
+			break;
+		}
+		case INDIR+I+sizeop(4):
+		case INDIR+U+sizeop(4):
+		case INDIR+F+sizeop(4):
+		if(LEFT_NODE(p)->op == VREG+P)
+			break;
+		{
+			int dreg = REG(p);
+			char *dst = xreg[dreg];
+												comment(STR("Load %s", dst));
+#ifdef GAMEBOY
+			if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+				int off = const_val(LEFT_NODE(p));
+												offsethl(off + framesize + argstack);
+			} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+												op2("LD", "HL", STR("#%s", LEFT_VAL(p)));
+			} else {
+				int sreg = LEFT_REG(p);
+												op2("LD", "H", hreg[sreg]);
+												op2("LD", "L", lreg[sreg]);
+			}
+												op2("LD", "A", "(HL+)");
+												op2("LD", STR("(%s)", dst), "A");
+												op2("LD", "A", "(HL+)");
+												op2("LD", STR("(%s+1)", dst), "A");
+												op2("LD", "A", "(HL+)");
+												op2("LD", STR("(%s+2)", dst), "A");
+												op2("LD", "A", "(HL)");
+												op2("LD", STR("(%s+3)", dst), "A");
+#else
+			if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+				int off = const_val(LEFT_NODE(p));
+				int treg = tmp16(HL) ? HL : (tmp16(DE) ? DE : ((tmp16(BC) ? BC : HL)));
+				int free = tmp16(treg);
+				if(!free) {
+												op0("EXX");
+				}
+												op2("LD", hreg[treg], STR("%d(IX)", off+3));
+												op2("LD", lreg[treg], STR("%d(IX)", off+2));
+												op2("LD", STR("(%s+2)", src), wreg[treg]);
+												op2("LD", hreg[treg], STR("%d(IX)", off+1));
+												op2("LD", lreg[treg], STR("%d(IX)", off));
+												op2("LD", STR("(%s)", src), wreg[treg]);
+				if(!free) {
+												op0("EXX");
+				}
+			} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+				char *addr = LEFT_VAL(p);
+				int treg = tmp16(HL) ? HL : (tmp16(DE) ? DE : ((tmp16(BC) ? BC : IY)));
+												op2("LD", wreg[treg], STR("(%s+2)", addr));
+												op2("LD", STR("(%s+2)", src), wreg[treg]);
+												op2("LD", wreg[treg], STR("(%s)", addr));
+												op2("LD", STR("(%s)", src), wreg[treg]);
+			} else {
+				int treg = tmp16(HL) ? HL : (tmp16(DE) ? DE : ((tmp16(BC) ? BC : HL)));
+				int free = tmp16(treg);
+												op1("PUSH", wreg[LEFT_REG(p)]);
+												op1("POP", "IY");
+				if(!free) {
+												op0("EXX");
+				}
+												op2("LD", hreg[treg], "3(IY)");
+												op2("LD", lreg[treg], "2(IY)");
+												op2("LD", STR("(%s+2)", src), wreg[treg]);
+												op2("LD", hreg[treg], "1(IY)");
+												op2("LD", lreg[treg], "0(IY)");
+												op2("LD", STR("(%s)", src), wreg[treg]);
+				if(!free) {
+												op0("EXX");
+				}
+			}
+#endif
+			break;
+		}
+		case ASGN+I+sizeop(1):
+		case ASGN+U+sizeop(1):
+		if(LEFT_NODE(p)->op == VREG+P)
+			break;
+		{
+			if(LEFT_NODE(p) != NULL && RIGHT_NODE(p) != NULL &&
+				(generic(RIGHT_NODE(p)->op) == ADD ||
+				generic(RIGHT_NODE(p)->op) == SUB ||
+				generic(RIGHT_NODE(p)->op) == BAND ||
+				generic(RIGHT_NODE(p)->op) == BOR ||
+				generic(RIGHT_NODE(p)->op) == BXOR ||
+				generic(RIGHT_NODE(p)->op) == BCOM ||
+				generic(RIGHT_NODE(p)->op) == NEG ||
+				((generic(RIGHT_NODE(p)->op) == LSH ||
+				generic(RIGHT_NODE(p)->op) == RSH) &&
+				IS_RIGHT_CONST(RIGHT_NODE(p)))) &&
+				RIGHT_NODE(p)->kids[0] != NULL &&
+				generic(RIGHT_NODE(p)->kids[0]->op) == INDIR &&
+				sametree(LEFT_NODE(p), RIGHT_NODE(p)->kids[0]->kids[0])) {
+				Node q = RIGHT_NODE(p);
+				int at = -1;
+#ifdef GAMEBOY
+				int hw_reg = 0;
+#endif
+				if(RIGHT_NODE(q) != NULL && IS_RIGHT_CONST(q)) {
+					int n = const_val(RIGHT_NODE(q));
+#ifdef GAMEBOY
+					if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+						char *addr = LEFT_VAL(p);
+						if(HARDWARE_REG(addr)) {
+							hw_reg = 1;
+						}
+					}
+					if(!hw_reg &&
+						(((generic(q->op) == ADD || generic(q->op) == SUB) && (n > 0 && n <= 2)) ||
+						(generic(q->op) == LSH || generic(q->op) == RSH))) {
+						at = HL;
+					}
+#else
+					if(((generic(q->op) == ADD || generic(q->op) == SUB) && (n > 0 && n <= 2)) ||
+						(generic(q->op) == LSH || generic(q->op) == RSH)) {
+						if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+							at = IX;
+						} else {
+							at = IY;
+						}
+					}
+					if(!(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p) ||
+						IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) &&
+						LEFT_REG(p) == HL) {
+						at = HL;
+					}
+#endif
+				}
+				if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+					int off = const_val(LEFT_NODE(p));
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+					if(at != HL) {
+												op2("LD", "A", "(HL)");
+					}
+#else
+					if(at != IX) {
+												op2("LD", "A", STR("%d(IX)", off));
+					}
+#endif
+				} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+					char *addr = LEFT_VAL(p);
+#ifdef GAMEBOY
+					if(hw_reg) {
+												op2("LDH", "A", STR("(%s)", addr + HARDWARE_REG_LEN));
+					} else if(at == HL) {
+												op2("LD", "HL", STR("#%s", addr));
+					}
+#else
+					if(at = IY) {
+												op2("LD", "IY", STR("#%s", addr));
+					}
+#endif
+					else {
+												op2("LD", "A", STR("(%s)", addr));
+					}
+				} else {
+					int sreg = LEFT_REG(p);
+					if(at == HL) {
+						if(sreg != HL) {
+												op2("LD", "H", hreg[sreg]);
+												op2("LD", "L", lreg[sreg]);
+						}
+					} else {
+												op2("LD", "A", STR("(%s)", wreg[sreg]));
+					}
+				}
+				switch(generic(q->op)) {
+					/* One argument */
+					case BCOM:
+												comment("Complement (mem)");
+												op0("CPL");
+						break;
+					case NEG:
+												comment("Negate (mem)");
+#ifdef GAMEBOY
+												op0("CPL");
+												op1("INC", "A");
+#else
+												op0("NEG");
+#endif
+						break;
+					/* Two arguments */
+					default:
+						if(IS_RIGHT_CONST(q)) {
+							char *val = RIGHT_VAL(q);
+							int n = const_val(RIGHT_NODE(q));
+							switch(generic(q->op)) {
+								case ADD:
+								case SUB:
+												comment(STR("Add/sub %s to/from (mem)", val));
+									if(at == HL && n > 0) {
+										while(n--)
+												op1(generic(q->op) == ADD ? "INC" : "DEC", "(HL)");
+									} else if(at == HL && n < 0) {
+										while(n++)
+												op1(generic(q->op) == ADD ? "DEC" : "INC", "(HL)");
+									} else
+#ifdef GAMEBOY
+#else
+									if(at == IX && n > 0) {
+										int off = const_val(LEFT_NODE(p));
+										while(n--)
+												op1(generic(q->op) == ADD ? "INC" : "DEC", STR("%d(IX)", off));
+									} else if(at == IX && n < 0) {
+										int off = const_val(LEFT_NODE(p));
+										while(n++)
+												op1(generic(q->op) == ADD ? "DEC" : "INC", STR("%d(IX)", off));
+									} else if(at == IY && n > 0) {
+										int off = const_val(LEFT_NODE(p));
+										while(n--)
+												op1(generic(q->op) == ADD ? "INC" : "DEC", STR("%d(IY)", off));
+									} else if(at == IY && n < 0) {
+										int off = const_val(LEFT_NODE(p));
+										while(n++)
+												op1(generic(q->op) == ADD ? "DEC" : "INC", STR("%d(IY)", off));
+									} else
+#endif
+									{
+												op1(generic(q->op) == ADD ? "ADD" : "SUB", STR("#<%s", val));
+									}
+									break;
+								case BAND:
+												comment(STR("And %s and (mem)", val));
+												op1("AND", STR("#<%s", val));
+									break;
+								case BOR:
+												comment(STR("Or %s and (mem)", val));
+												op1("OR", STR("#<%s", val));
+									break;
+								case BXOR:
+												comment(STR("Xor %s and (mem)", val));
+												op1("XOR", STR("#<%s", val));
+									break;
+								case LSH:
+								case RSH:
+												comment(STR("Left/right shift (mem) by %s", val));
+									if(at == HL) {
+										while(n--)
+												op1(generic(q->op) == LSH ? "SLA" : (optype(q->op)==U ? "SRL" : "SRA"), "(HL)");
+									} else
+#ifdef GAMEBOY
+#else
+									if(at == IX) {
+										int off = const_val(LEFT_NODE(p));
+										while(n--)
+												op1(generic(q->op) == LSH ? "SLA" : (optype(q->op)==U ? "SRL" : "SRA"), STR("%d(IX)", off));
+									} else if(at == IY) {
+										int off = const_val(LEFT_NODE(p));
+										while(n--)
+												op1(generic(q->op) == LSH ? "SLA" : (optype(q->op)==U ? "SRL" : "SRA"), STR("%d(IY)", off));
+									} else
+#endif
+									{
+										while(n--)
+												op1(generic(q->op) == LSH ? "SLA" : (optype(q->op)==U ? "SRL" : "SRA"), "A");
+									}
+									break;
+							}
+						} else {
+							int sreg = RIGHT_REG(q);
+							switch(generic(q->op)) {
+								case ADD:
+												comment(STR("Add %s to (mem)", breg[sreg]));
+												op1("ADD", breg[sreg]);
+									break;
+								case SUB:
+												comment(STR("Sub %s from (mem)", breg[sreg]));
+												op1("SUB", breg[sreg]);
+									break;
+								case BAND:
+												comment(STR("And %s and (mem)", breg[sreg]));
+												op1("AND", breg[sreg]);
+									break;
+								case BOR:
+												comment(STR("Or %s and (mem)", breg[sreg]));
+												op1("OR", breg[sreg]);
+									break;
+								case BXOR:
+												comment(STR("Xor %s and (mem)", breg[sreg]));
+												op1("XOR", breg[sreg]);
+									break;
+							}
+						}
+				}
+				if(at < 0) {
+					if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+						char *addr = LEFT_VAL(p);
+#ifdef GAMEBOY
+						if(hw_reg) {
+												op2("LDH", STR("(%s)", addr + HARDWARE_REG_LEN), "A");
+						} else
+#endif
+						{
+												op2("LD", STR("(%s)", addr), "A");
+						}
+					} else if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+#ifdef GAMEBOY
+												op2("LD", "(HL)", "A");
+#else
+						int off = const_val(LEFT_NODE(p));
+												op2("LD", STR("%d(IX)", off), "A");
+#endif
+					} else {
+						int sreg = LEFT_REG(p);
+												op2("LD", STR("(%s)", wreg[sreg]), "A");
+					}
+				}
+			} else if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+				int off = const_val(LEFT_NODE(p));
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+#endif
+				if(IS_RIGHT_CONST(p)) {
+					char *val = RIGHT_VAL(p);
+												comment(STR("Store %s", val));
+#ifdef GAMEBOY
+												op2("LD", "(HL)", STR("#<%s", val));
+#else
+												op2("LD", STR("%d(IX)", off), STR("#<%s", val));
+#endif
+				} else {
+					int sreg = LEFT_REG(p);
+												comment(STR("Store %s", breg[sreg]));
+#ifdef GAMEBOY
+												op2("LD", "(HL)", breg[sreg]);
+#else
+												op2("LD", STR("%d(IX)", off), breg[sreg]);
+#endif
+				}
+			} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+				char *addr = LEFT_VAL(p);
+				if(IS_RIGHT_CONST(p)) {
+					char *val = RIGHT_VAL(p);
+												comment(STR("Store %s", val));
+												op2("LD", "A", STR("#<%s", val));
+				} else {
+					int sreg = LEFT_REG(p);
+												comment(STR("Store %s", breg[sreg]));
+												op2("LD", "A", breg[sreg]);
+				}
+#ifdef GAMEBOY
+				if(HARDWARE_REG(addr)) {
+												op2("LDH", STR("(%s)", addr + HARDWARE_REG_LEN), "A");
+				} else
+#endif
+				{
+												op2("LD", STR("(%s)", addr), "A");
+				}
+			} else {
+				int dreg = LEFT_REG(p);
+				if(IS_RIGHT_CONST(p)) {
+					char *val = RIGHT_VAL(p);
+												comment(STR("Store %s", val));
+					if(dreg != HL) {
+												op2("LD", "A", STR("#<%s", val));
+												op2("LD", STR("(%s)", wreg[dreg]), "A");
+					} else {
+												op2("LD", "(HL)", STR("#%s", val));
+					}
+				} else {
+					int sreg = RIGHT_REG(p);
+												comment(STR("Store %s", breg[sreg]));
+					if(dreg != HL) {
+												op2("LD", "A", breg[sreg]);
+												op2("LD", STR("(%s)", wreg[dreg]), "A");
+					} else {
+												op2("LD", "(HL)", breg[sreg]);
+					}
+				}
+			}
+			break;
+		}
+		case ASGN+I+sizeop(2):
+		case ASGN+U+sizeop(2):
+		case ASGN+P+sizeop(2):
+		if(LEFT_NODE(p)->op == VREG+P)
+			break;
+		{
+			if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+				int off = const_val(LEFT_NODE(p));
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+#endif
+				if(IS_RIGHT_CONST(p) || IS_RIGHT_ADDRGP(p)) {
+					char *val = RIGHT_VAL(p);
+#ifdef GAMEBOY
+												comment(STR("Store %s", val));
+												op2("LD", "(HL)", STR("#<%s", val));
+												op1("INC", "HL");
+												op2("LD", "(HL)", STR("#>%s", val));
+#else
+					if(IS_RIGHT_CONST(p) && const_val(RIGHT_NODE(p)) == 0) {
+												op1("XOR", "A");
+												op2("LD", STR("%d(IX)", off), "A");
+						off++;
+												op2("LD", STR("%d(IX)", off), "A");
+					} else {
+												op2("LD", STR("%d(IX)", off), STR("#<%s", val));
+						off++;
+												op2("LD", STR("%d(IX)", off), STR("#>%s", val));
+					}
+#endif
+				} else {
+					int sreg = RIGHT_REG(p);
+												comment(STR("Store %s", wreg[sreg]));
+#ifdef GAMEBOY
+												op2("LD", "A", lreg[sreg]);
+												op2("LD", "(HL+)", "A");
+												op2("LD", "(HL)", hreg[sreg]);
+#else
+												op2("LD", STR("%d(IX)", off), lreg[sreg]);
+					off++;
+												op2("LD", STR("%d(IX)", off), hreg[sreg]);
+#endif
+				}
+			} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+				char *addr = LEFT_VAL(p);
+#ifdef GAMEBOY
+				if(IS_RIGHT_CONST(p) || IS_RIGHT_ADDRGP(p)) {
+					char *val = RIGHT_VAL(p);
+												comment(STR("Store %s", val));
+												op2("LD", "A", STR("#<%s", val));
+					if(HARDWARE_REG(addr)) {
+												op2("LDH", STR("(%s)", addr + HARDWARE_REG_LEN), "A");
+												op2("LD", "A", STR("#>%s", val));
+												op2("LDH", STR("(%s+1)", addr + HARDWARE_REG_LEN), "A");
+					} else {
+												op2("LD", STR("(%s)", addr), "A");
+												op2("LD", "A", STR("#>%s", val));
+												op2("LD", STR("(%s+1)", addr), "A");
+					}
+#else
+				if(IS_RIGHT_CONST(p) || IS_RIGHT_ADDRGP(p)) {
+					char *val = RIGHT_VAL(p);
+					int treg = tmp16(HL) ? HL : (tmp16(DE) ? DE : ((tmp16(BC) ? BC : HL)));
+					int free = tmp16(treg);
+												comment(STR("Store %s", val));
+					if(!free) {
+												op0("EXX");
+					}
+												op2("LD", wreg[treg], STR("#%s", val));
+												op2("LD", STR("(%s)", addr), wreg[treg]);
+					if(!free) {
+												op0("EXX");
+					}
+#endif
+				} else {
+					int sreg = RIGHT_REG(p);
+#ifdef GAMEBOY
+												comment(STR("Store %s", wreg[sreg]));
+												op2("LD", "A", lreg[sreg]);
+					if(HARDWARE_REG(addr)) {
+												op2("LDH", STR("(%s)", addr + HARDWARE_REG_LEN), "A");
+												op2("LD", "A", hreg[sreg]);
+												op2("LDH", STR("(%s+1)", addr + HARDWARE_REG_LEN), "A");
+					} else {
+												op2("LD", STR("(%s)", addr), "A");
+												op2("LD", "A", hreg[sreg]);
+												op2("LD", STR("(%s+1)", addr), "A");
+					}
+#else
+												op2("LD", STR("(%s)", addr), wreg[sreg]);
+#endif
+				}
+			} else {
+				int dreg = LEFT_REG(p);
+				if(IS_RIGHT_CONST(p) || IS_RIGHT_ADDRGP(p)) {
+					char *val = RIGHT_VAL(p);
+												comment(STR("Store %s", val));
+					if(dreg == HL) {
+												op2("LD", "(HL)", STR("#<%s", val));
+												op1("INC", "HL");
+												op2("LD", "(HL)", STR("#>%s", val));
+					} else {
+												op2("LD", "A", STR("#<%s", val));
+												op2("LD", STR("(%s)", wreg[dreg]), "A");
+												op1("INC", wreg[dreg]);
+												op2("LD", "A", STR("#>%s", val));
+												op2("LD", STR("(%s)", wreg[dreg]), "A");
+					}
+				} else {
+					int sreg = RIGHT_REG(p);
+												comment(STR("Store %s", wreg[sreg]));
+					if(dreg == HL) {
+												op2("LD", "(HL)", lreg[sreg]);
+												op1("INC", "HL");
+												op2("LD", "(HL)", hreg[sreg]);
+					} else {
+												op2("LD", "A", lreg[sreg]);
+												op2("LD", STR("(%s)", wreg[dreg]), "A");
+												op1("INC", wreg[dreg]);
+												op2("LD", "A", hreg[sreg]);
+												op2("LD", STR("(%s)", wreg[dreg]), "A");
+					}
+				}
+			}
+			break;
+		}
+		case ASGN+I+sizeop(4):
+		case ASGN+U+sizeop(4):
+		case ASGN+F+sizeop(4):
+		if(LEFT_NODE(p)->op == VREG+P)
+			break;
+		{
+			if(LEFT_NODE(p) != NULL && RIGHT_NODE(p) != NULL &&
+				(generic(RIGHT_NODE(p)->op) == NEG ||
+				generic(RIGHT_NODE(p)->op) == BCOM)) {
+				Node q = RIGHT_NODE(p);
+												comment("Long/floating point neg");
+				save(BC);
+				save(DE);
+#ifdef GAMEBOY
+#else
+				save(HL);
+#endif
+				load_32(LEFT_NODE(q));
+				if(generic(q->op) == NEG) {
+												op1(".globl", optype((p)->op)==F ? ".fneg32" : ".neg32");
+												op1("CALL", optype((p)->op)==F ? ".fneg32" : ".neg32");
+				} else if(generic(p->op) == BXOR) {
+												op1(".globl", ".cpl32");
+												op1("CALL", ".cpl32");
+				}
+				store_32(LEFT_NODE(p));
+#ifdef GAMEBOY
+#else
+				restore(HL);
+#endif
+				restore(DE);
+				restore(BC);
+			} else if(LEFT_NODE(p) != NULL && RIGHT_NODE(p) != NULL &&
+				(generic(RIGHT_NODE(p)->op) == ADD ||
+				generic(RIGHT_NODE(p)->op) == SUB ||
+				generic(RIGHT_NODE(p)->op) == MUL ||
+				generic(RIGHT_NODE(p)->op) == DIV ||
+				generic(RIGHT_NODE(p)->op) == MOD ||
+				generic(RIGHT_NODE(p)->op) == BAND ||
+				generic(RIGHT_NODE(p)->op) == BOR ||
+				generic(RIGHT_NODE(p)->op) == BXOR)) {
+				Node q = RIGHT_NODE(p);
+												comment("Long/floating point add/sub/mul/div");
+				save(BC);
+				save(DE);
+#ifdef GAMEBOY
+#else
+				save(HL);
+#endif
+				load_32(RIGHT_NODE(q));
+												op1("PUSH", "HL");
+												op1("PUSH", "DE");
+				argstack += 4;
+				load_32(LEFT_NODE(q));
+				if(generic(q->op) == ADD) {
+												op1(".globl", optype((p)->op)==F ? ".fadd32" : (optype((p)->op)==U ? ".addu32" : ".add32"));
+												op1("CALL", optype((p)->op)==F ? ".fadd32" : (optype((p)->op)==U ? ".addu32" : ".add32"));
+				} else if(generic(q->op) == SUB) {
+												op1(".globl", optype((p)->op)==F ? ".fsub32" : (optype((p)->op)==U ? ".subu32" : ".sub32"));
+												op1("CALL", optype((p)->op)==F ? ".fsub32" : (optype((p)->op)==U ? ".subu32" : ".sub32"));
+				} else if(generic(q->op) == MUL) {
+												op1(".globl", optype((p)->op)==F ? ".fmul32" : (optype((p)->op)==U ? ".mulu32" : ".mul32"));
+												op1("CALL", optype((p)->op)==F ? ".fmul32" : (optype((p)->op)==U ? ".mulu32" : ".mul32"));
+				} else if(generic(q->op) == DIV) {
+												op1(".globl", optype((p)->op)==F ? ".fdiv32" : (optype((p)->op)==U ? ".divu32" : ".div32"));
+												op1("CALL", optype((p)->op)==F ? ".fdiv32" : (optype((p)->op)==U ? ".divu32" : ".div32"));
+				} else if(generic(p->op) == MOD) {
+												op1(".globl", optype((p)->op)==U ? ".modu32" : ".mod32");
+												op1("CALL", optype((p)->op)==U ? ".modu32" : ".mod32");
+				} else if(generic(p->op) == BAND) {
+												op1(".globl", ".and32");
+												op1("CALL", ".and32");
+				} else if(generic(p->op) == BOR) {
+												op1(".globl", ".or32");
+												op1("CALL", ".or32");
+				} else if(generic(p->op) == BXOR) {
+												op1(".globl", ".xor32");
+												op1("CALL", ".xor32");
+				}
+				argstack -= 4;
+				store_32(LEFT_NODE(p));
+#ifdef GAMEBOY
+#else
+				restore(HL);
+#endif
+				restore(DE);
+				restore(BC);
+			} else {
+				char *src;
+				if(IS_RIGHT_INDIR(p) && IS_LEFT_ADDRGP(RIGHT_NODE(p)))
+					src = LEFT_VAL(RIGHT_NODE(p));
+				else
+					src = xreg[RIGHT_REG(p)];
+												comment(STR("Store %s", src));
+#ifdef GAMEBOY
+				if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+					int off = const_val(LEFT_NODE(p));
+												offsethl(off + framesize + argstack);
+				} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+												op2("LD", "HL", STR("#%s", LEFT_VAL(p)));
+				} else {
+												op2("LD", "HL", STR("#%s", xreg[LEFT_REG(p)]));
+				}
+												op2("LD", "A", STR("(%s)", src));
+												op2("LD", "(HL+)", "A");
+												op2("LD", "A", STR("(%s+1)", src));
+												op2("LD", "(HL+)", "A");
+												op2("LD", "A", STR("(%s+2)", src));
+												op2("LD", "(HL+)", "A");
+												op2("LD", "A", STR("(%s+3)", src));
+												op2("LD", "(HL)", "A");
+#else
+				if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+					int off = const_val(LEFT_NODE(p));
+					int treg = tmp16(HL) ? HL : (tmp16(DE) ? DE : ((tmp16(BC) ? BC : HL)));
+					int free = tmp16(treg);
+					if(!free) {
+												op0("EXX");
+					}
+												op2("LD", wreg[treg], STR("(%s+2)", src));
+												op2("LD", STR("%d(IX)", off+3), hreg[treg]);
+												op2("LD", STR("%d(IX)", off+2), lreg[treg]);
+												op2("LD", wreg[treg], STR("(%s)", src));
+												op2("LD", STR("%d(IX)", off+1), hreg[treg]);
+												op2("LD", STR("%d(IX)", off), lreg[treg]);
+					if(!free) {
+												op0("EXX");
+					}
+				} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+					char *addr = LEFT_VAL(p);
+					int treg = tmp16(HL) ? HL : (tmp16(DE) ? DE : ((tmp16(BC) ? BC : IY)));
+												op2("LD", wreg[treg], STR("(%s+2)", src));
+												op2("LD", STR("(%s+2)", addr), wreg[treg]);
+												op2("LD", wreg[treg], STR("(%s)", src));
+												op2("LD", STR("(%s)", addr), wreg[treg]);
+				} else {
+					int treg = tmp16(HL) ? HL : (tmp16(DE) ? DE : ((tmp16(BC) ? BC : HL)));
+					int free = tmp16(treg);
+												op1("PUSH", wreg[LEFT_REG(p)]);
+												op1("POP", "IY");
+					if(!free) {
+												op0("EXX");
+					}
+												op2("LD", wreg[treg], STR("(%s+2)", src));
+												op2("LD", "3(IY)", hreg[treg]);
+												op2("LD", "2(IY)", lreg[treg]);
+												op2("LD", wreg[treg], STR("(%s)", src));
+												op2("LD", "1(IY)", hreg[treg]);
+												op2("LD", "0(IY)", lreg[treg]);
+					if(!free) {
+												op0("EXX");
+					}
+				}
+#endif
+			}
+			break;
+		}
+		case ASGN+B: {
+			int sreg = RIGHT_REG(p);
+			int dreg = LEFT_REG(p);
+			int size = p->syms[0]->u.c.v.i;
+												comment(STR("Assign structure from %s to %s", wreg[sreg], wreg[dreg]));
+#ifdef GAMEBOY
+			if(size > 4) {
+				while(size > 0) {
+					int lab = genlabel(1);
+												op2("LD", "H", STR("#%d", size > 0xFF ? 0 : size));
+					size -= (size > 0xFF ? 0x100 : size);
+												label(STR(".L%d:", lab));
+												op2("LD", "A", STR("(%s)", wreg[sreg]));
+												op2("LD", STR("(%s)", wreg[dreg]), "A");
+												op1("INC", wreg[sreg]);
+												op1("INC", wreg[dreg]);
+												op1("DEC", "H");
+												op2("JR", "NZ", STR(".L%d", lab));
+				}
+			} else {
+				while(size) {
+												op2("LD", "A", STR("(%s)", wreg[sreg]));
+												op2("LD", STR("(%s)", wreg[dreg]), "A");
+					if(size > 1) {
+												op1("INC", wreg[sreg]);
+												op1("INC", wreg[dreg]);
+					}
+					size--;
+				}
+			}
+#else
+												op2("LD", "BC", STR("#%d", size));
+												op0("LDIR");
+#endif
+			break;
+		}
+		case CALL+I+sizeop(1):
+		case CALL+U+sizeop(1):
+		case CALL+I+sizeop(2):
+		case CALL+U+sizeop(2):
+		case CALL+P+sizeop(2):
+		case CALL+I+sizeop(4):
+		case CALL+U+sizeop(4):
+		case CALL+F+sizeop(4):
+		case CALL+V:
+		case CALL+B: {
+			int off = const_val(p);
+			if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+				char *addr = LEFT_VAL(p);
+												op1("CALL", addr);
+			} else {
+				int sreg = LEFT_REG(p);
+				int lab1 = genlabel(1);
+				int lab2 = genlabel(1);
+												op1("JR", STR(".L%d", lab2));
+												label(STR(".L%d:", lab1));
+												op1("JP", STR("(%s)", wreg[sreg]));
+												label(STR(".L%d:", lab2));
+												op1("CALL", STR(".L%d", lab1));
+			}
+#ifdef GAMEBOY
+			offsetsp(off);
+#endif
+			argstack -= off;
+			break;
+		}
+		case ARG+B: {
+			int lab = genlabel(1);
+			int sreg = LEFT_REG(p);
+			int size = p->syms[0]->u.c.v.i;
+												comment("Structure argument");
+#ifdef GAMEBOY
+			if(size > 8)
+				fprintf(stderr, "WARNING: passing a big struct as value generates much code\n");
+												comment(STR("Pass structure parameter from %s", wreg[sreg]));
+												offsetsp(-size);
+												offsethl(0);
+			while(size) {
+												op2("LD", "A", STR("(%s)", wreg[sreg]));
+												op2("LD", "(HL+)", "A");
+				if(size > 1) {
+												op1("INC", wreg[sreg]);
+				}
+				size--;
+			}
+#else
+												op2("LD", "HL", STR("#-%d", size));
+												op2("ADD", "HL", "SP");
+												op2("LD", "SP", "HL");
+												op2("LD", "HL", "#0x0000");
+												op2("ADD", "HL", "SP");
+												op2("EX", "DE", "HL");
+												op0("LDIR");
+#endif
+			argstack += size;
+			break;
+		}
+		case ARG+I+sizeop(1):
+		case ARG+U+sizeop(1): {
+#ifdef GAMEBOY
+												comment("8-bit argument");
+			if(IS_LEFT_INDIR(p)) {
+				Node q = LEFT_NODE(p);
+				if(IS_LEFT_ADDRFP(q) || IS_LEFT_ADDRLP(q)) {
+					int off = const_val(LEFT_NODE(q));
+												offsethl(off + framesize + argstack);
+												op2("LD", "A", "(HL)");
+				} else if(IS_LEFT_CONST(q) || IS_LEFT_ADDRGP(q)) {
+					char *addr = LEFT_VAL(q);
+					if(HARDWARE_REG(addr)) {
+												op2("LDH", "A", STR("(%s)", addr + HARDWARE_REG_LEN));
+					} else {
+												op2("LD", "A", STR("(%s)", addr));
+					}
+				} else {
+												op2("LD", "A", STR("(%s)", wreg[LEFT_REG(q)]));
+				}
+			} else if(IS_LEFT_CONST(p)) {
+				char *val = LEFT_VAL(p);
+												op2("LD", "A", STR("#<%s", val));
+			} else {
+												op2("LD", "A", breg[LEFT_REG(p)]);
+			}
+												op1("PUSH", "AF");
+												offsetsp(1);
+			argstack++;
+#else
+			Symbol sym;
+			Node call;
+			int argno = 0;
+												comment("8-bit argument");
+			for(call = p->link; call && generic(call->op) != CALL; call = call->link)
+				argno++;
+			assert(call && call->kids[0] && call->kids[0]->syms[0]);
+			sym = argreg(call->kids[0]->syms[0], p->op, p->link->op, argno);
+			if(sym == NULL) {
+				if(IS_LEFT_INDIR(p)) {
+					Node q = LEFT_NODE(p);
+					if(IS_LEFT_ADDRFP(q) || IS_LEFT_ADDRLP(q)) {
+						int off = const_val(LEFT_NODE(q));
+												op2("LD", "A", STR("%d(IX)", off));
+					} else if(IS_LEFT_CONST(q) || IS_LEFT_ADDRGP(q)) {
+												op2("LD", "A", STR("(%s)", LEFT_VAL(q)));
+					} else {
+												op2("LD", "A", STR("(%s)", wreg[LEFT_REG(q)]));
+					}
+				} else if(IS_LEFT_CONST(p)) {
+					char *val = LEFT_VAL(p);
+												op2("LD", "A", STR("#<%s", val));
+				} else {
+												op2("LD", "A", breg[LEFT_REG(p)]);
+				}
+												op1("PUSH", "AF");
+												offsetsp(1);
+				argstack++;
+			} else {
+				char *dst = sym->x.name;
+				if(IS_LEFT_INDIR(p)) {
+					Node q = LEFT_NODE(p);
+					if(IS_LEFT_ADDRFP(q) || IS_LEFT_ADDRLP(q)) {
+						int off = const_val(LEFT_NODE(q));
+												op2("LD", dst, STR("%d(IX)", off));
+					} else if(IS_LEFT_CONST(q) || IS_LEFT_ADDRGP(q)) {
+												op2("LD", "A", STR("(%s)", LEFT_VAL(q)));
+												op2("LD", dst, "A");
+					} else {
+												op2("LD", "A", STR("(%s)", wreg[LEFT_REG(q)]));
+												op2("LD", dst, "A");
+					}
+				} else if(IS_LEFT_CONST(p)) {
+					char *val = LEFT_VAL(p);
+												op2("LD", dst, STR("#<%s", val));
+				} else {
+												op2("LD", dst, breg[LEFT_REG(p)]);
+				}
+			}
+#endif
+			break;
+		}
+		case ARG+I+sizeop(2):
+		case ARG+U+sizeop(2):
+		case ARG+P+sizeop(2): {
+#ifdef GAMEBOY
+												comment("16-bit argument");
+												op1("PUSH", wreg[LEFT_REG(p)]);
+			argstack += 2;
+#else
+			Symbol sym;
+			Node call;
+			int argno = 0;
+												comment("16-bit argument");
+			for(call = p->link; call && generic(call->op) != CALL; call = call->link)
+				argno++;
+			assert(call && call->kids[0] && call->kids[0]->syms[0]);
+			sym = argreg(call->kids[0]->syms[0], p->op, p->link->op, argno);
+			if(sym == NULL) {
+												op1("PUSH", wreg[LEFT_REG(p)]);
+				argstack += 2;
+			}
+#endif
+			break;
+		}
+		case ARG+I+sizeop(4):
+		case ARG+U+sizeop(4):
+		case ARG+F+sizeop(4): {
+#ifdef GAMEBOY
+												comment("Long/floating point argument");
+			if(IS_LEFT_INDIR(p)) {
+				Node q = LEFT_NODE(p);
+				if(IS_LEFT_ADDRFP(q) || IS_LEFT_ADDRLP(q)) {
+					int off = const_val(LEFT_NODE(q));
+												offsethl(off + framesize + argstack + 3);
+				} else if(IS_LEFT_CONST(q) || IS_LEFT_ADDRGP(q)) {
+												op2("LD", "HL", STR("#%s+3", LEFT_VAL(q)));
+				} else {
+												op2("LD", "HL", "#0x0003");
+												op2("ADD", "HL", wreg[LEFT_REG(q)]);
+				}
+			} else {
+												op2("LD", "HL", STR("#%s+3", xreg[LEFT_REG(p)]));
+			}
+												op2("LD", "A", "(HL-)");
+												op1("PUSH", "AF");
+												op1("INC", "SP");
+												op2("LD", "A", "(HL-)");
+												op1("PUSH", "AF");
+												op1("INC", "SP");
+												op2("LD", "A", "(HL-)");
+												op2("LD", "L", "(HL)");
+												op2("LD", "H", "A");
+												op1("PUSH", "HL");
+			argstack += 4;
+#else
+			Symbol sym;
+			Node call;
+			int argno = 0;
+												comment("Long/floating point argument");
+			for(call = p->link; call && generic(call->op) != CALL; call = call->link)
+				argno++;
+			assert(call && call->kids[0] && call->kids[0]->syms[0]);
+			sym = argreg(call->kids[0]->syms[0], p->op, p->link->op, argno);
+			if(sym == NULL) {
+				if(IS_LEFT_INDIR(p)) {
+					Node q = LEFT_NODE(p);
+					if(IS_LEFT_ADDRFP(q) || IS_LEFT_ADDRLP(q)) {
+						int off = const_val(LEFT_NODE(q));
+												op1("PUSH", "HL");
+												op2("LD", "H", STR("%d(IX)", off+3));
+												op2("LD", "L", STR("%d(IX)", off+2));
+												op2("EX", "(SP)", "HL");
+												op1("PUSH", "HL");
+												op2("LD", "H", STR("%d(IX)", off+1));
+												op2("LD", "L", STR("%d(IX)", off));
+												op2("EX", "(SP)", "HL");
+					} else if(IS_LEFT_CONST(q) || IS_LEFT_ADDRGP(q)) {
+						char *addr = LEFT_VAL(q);
+						int treg = tmp16(HL) ? HL : (tmp16(DE) ? DE : ((tmp16(BC) ? BC : IY)));
+												op2("LD", wreg[treg], STR("(%s+2)", addr));
+												op1("PUSH", wreg[treg]);
+												op2("LD", wreg[treg], STR("(%s)", addr));
+												op1("PUSH", wreg[treg]);
+					} else {
+												op1("PUSH", wreg[LEFT_REG(q)]);
+												op1("POP", "IY");
+												op1("PUSH", "HL");
+												op2("LD", "H", STR("3(IY)"));
+												op2("LD", "L", STR("2(IY)"));
+												op2("EX", "(SP)", "HL");
+												op1("PUSH", "HL");
+												op2("LD", "H", STR("1(IY)"));
+												op2("LD", "L", STR("0(IY)"));
+												op2("EX", "(SP)", "HL");
+					}
+				} else {
+					int sreg = LEFT_REG(p);
+					int treg = tmp16(HL) ? HL : (tmp16(DE) ? DE : ((tmp16(BC) ? BC : IY)));
+												op2("LD", wreg[treg], STR("(%s+2)", xreg[sreg]));
+												op1("PUSH", wreg[treg]);
+												op2("LD", wreg[treg], STR("(%s)", xreg[sreg]));
+												op1("PUSH", wreg[treg]);
+				}
+				argstack += 4;
+			} else {
+				if(IS_LEFT_INDIR(p)) {
+					Node q = LEFT_NODE(p);
+					if(IS_LEFT_ADDRFP(q) || IS_LEFT_ADDRLP(q)) {
+						int off = const_val(LEFT_NODE(q));
+												op2("LD", "B", STR("%d(IX)", off+3));
+												op2("LD", "C", STR("%d(IX)", off+2));
+												op2("LD", "D", STR("%d(IX)", off+1));
+												op2("LD", "E", STR("%d(IX)", off));
+					} else if(IS_LEFT_CONST(q) || IS_LEFT_ADDRGP(q)) {
+						char *addr = LEFT_VAL(q);
+												op2("LD", "BC", STR("(%s+2)", addr));
+												op2("LD", "DE", STR("(%s)", addr));
+					} else {
+												op1("PUSH", wreg[LEFT_REG(q)]);
+												op1("POP", "IY");
+												op2("LD", "B", "3(IY)");
+												op2("LD", "C", "2(IY)");
+												op2("LD", "D", "1(IY)");
+												op2("LD", "E", "0(IY)");
+					}
+				} else {
+					int sreg = LEFT_REG(p);
+												op2("LD", "BC", STR("(%s+2)", xreg[sreg]));
+												op2("LD", "DE", STR("(%s)", xreg[sreg]));
+				}
+			}
+#endif
+			break;
+		}
+		case CVI+I+sizeop(2):
+		case CVI+U+sizeop(2):
+		case CVU+I+sizeop(2):
+		case CVU+U+sizeop(2):
+		case CVU+P+sizeop(2):
+		case CVP+U+sizeop(2): {
+			int dreg = REG(p);
+			int sreg = LEFT_REG(p);
+			if(opsize(LEFT_NODE(p)->op) == 1) {
+												comment("Convert (un)signed 8-bit to 16-bit");
+				if(optype(LEFT_NODE(p)->op) == I) {
+												op2("LD", "A", breg[sreg]);
+												op2("LD", lreg[dreg], "A");
+												op0("RLCA");
+												op1("SBC", "A");
+												op2("LD", hreg[dreg], "A");
+				} else {
+												op2("LD", lreg[dreg], breg[sreg]);
+												op2("LD", hreg[dreg], "#0");
+				}
+			} else if(opsize(LEFT_NODE(p)->op) == 2) {
+												comment("Convert (un)signed 16-bit to 16-bit");
+												op2("LD", hreg[dreg], hreg[sreg]);
+												op2("LD", lreg[dreg], lreg[sreg]);
+			} else if(opsize(LEFT_NODE(p)->op) == 4) {
+												comment("Convert (un)signed 32-bit to 16-bit");
+#ifdef GAMEBOY
+												op2("LD", "A", STR("(%s+1)", xreg[sreg]));
+												op2("LD", hreg[dreg], "A");
+												op2("LD", "A", STR("(%s)", xreg[sreg]));
+												op2("LD", lreg[dreg], "A");
+#else
+												op2("LD", wreg[dreg], STR("(%s)", xreg[sreg]));
+#endif
+			}
+			break;
+		}
+		case CVI+I+sizeop(4):
+		case CVI+U+sizeop(4):
+		case CVU+I+sizeop(4):
+		case CVU+U+sizeop(4):
+		case CVP+U+sizeop(4): {
+#ifdef GAMEBOY
+#else
+			save(HL);
+#endif
+			if(opsize(LEFT_NODE(p)->op) == 1) {
+												comment("Convert (un)signed 8-bit to 32-bit");
+				if(optype(LEFT_NODE(p)->op) == I) {
+												op2("LD", "A", "E");
+												op0("RLCA");
+												op1("SBC", "A");
+												op2("LD", "D", "A");
+												op2("LD", "L", "A");
+												op2("LD", "H", "A");
+				} else {
+												op2("LD", "HL", "#0x0000");
+												op2("LD", "D", "L");
+				}
+			} else if(opsize(LEFT_NODE(p)->op) == 2) {
+				if(optype(LEFT_NODE(p)->op) == I) {
+												op2("LD", "A", "D");
+												op0("RLCA");
+												op1("SBC", "A");
+												op2("LD", "L", "A");
+												op2("LD", "H", "A");
+				} else {
+												comment("Convert (un)signed 16-bit to 32-bit");
+												op2("LD", "HL", "#0x0000");
+				}
+			} else if(opsize(LEFT_NODE(p)->op) == 4) {
+													comment("Convert (un)signed 32-bit to 32-bit");
+				save(DE);
+				load_32(LEFT_NODE(p));
+			}
+			store_32(p);
+			if(opsize(LEFT_NODE(p)->op) == 4) {
+				restore(DE);
+			}
+#ifdef GAMEBOY
+#else
+			restore(HL);
+#endif
+			break;
+		}
+		case CVI+F+sizeop(4): {
+			int sreg = LEFT_REG(p);
+												comment("Convert int to floating point");
+			save(BC);
+			if(opsize(LEFT_NODE(p)->op) == 4) {
+				save(DE);
+				load_32(LEFT_NODE(p));
+			}
+			if(opsize(LEFT_NODE(p)->op) == 1) {
+												op1(".globl", ".fi8tof32");
+												op1("CALL", ".fi8tof32");
+			} else if(opsize(LEFT_NODE(p)->op) == 2) {
+												op1(".globl", ".fi16tof32");
+												op1("CALL", ".fi16tof32");
+			} else if(opsize(LEFT_NODE(p)->op) == 4) {
+												op1(".globl", ".fi32tof32");
+												op1("CALL", ".fi32tof32");
+			}
+			store_32(p);
+			if(opsize(LEFT_NODE(p)->op) == 4) {
+				restore(DE);
+			}
+			restore(BC);
+			break;
+		}
+		case CVF+I+sizeop(1):
+		case CVF+I+sizeop(2):
+		case CVF+I+sizeop(4): {
+			int dreg = REG(p);
+												comment("Convert floating point to int");
+			save(BC);
+			if(opsize(p->op) == 4) {
+				save(DE);
+			}
+#ifdef GAMEBOY
+#else
+			save(HL);
+#endif
+			load_32(LEFT_NODE(p));
+												op1(".globl", ".ff32toi32");
+												op1("CALL", ".ff32toi32");
+			if(opsize(p->op) == 4) {
+				store_32(p);
+			}
+#ifdef GAMEBOY
+#else
+			restore(HL);
+#endif
+			if(opsize(p->op) == 4) {
+				restore(DE);
+			}
+			restore(BC);
+			break;
+		}
+		case CVF+F+sizeop(4): {
+			int sreg = LEFT_REG(p);
+			int dreg = REG(p);
+												comment("Convert floating point to floating point");
+			if(sreg != dreg) {
+				load_32(LEFT_NODE(p));
+				store_32(p);
+			}
+			break;
+		}
+		case CNST+I+sizeop(1):
+		case CNST+U+sizeop(1): {
+			int dreg = REG(p);
+			char *val = VAL(p);
+												comment(STR("Load %s into %s", val, breg[dreg]));
+												op2("LD", breg[dreg], STR("#<%s", val));
+			break;
+		}
+		case CNST+I+sizeop(2):
+		case CNST+U+sizeop(2):
+		case CNST+P+sizeop(2):
+		case ADDRG+P+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = wreg[dreg];
+			char *val = VAL(p);
+												comment(STR("Load %s into %s", val, dst));
+												op2("LD", dst, STR("#%s", val));
+			break;
+		}
+		case ADDRF+P+sizeop(2):
+		case ADDRL+P+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = wreg[dreg];
+			int off = const_val(p);
+												comment(STR("Load local address into %s", dst));
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+												op2("LD", hreg[dreg], "H");
+												op2("LD", lreg[dreg], "L");
+#else
+			if(dreg == HL) {
+												op2("LD", "HL", STR("#%d", off + framesize + argstack));
+												op2("ADD", "HL", "SP");
+			} else if(tmp16(HL)) {
+												op2("LD", "HL", STR("#%d", off + framesize + argstack));
+												op2("ADD", "HL", "SP");
+				if(dreg == DE) {
+												op2("EX", "DE", "HL");
+				} else {
+												op2("LD", hreg[dreg], "H");
+												op2("LD", lreg[dreg], "L");
+				}
+			} else {
+												op2("LD", "IY", STR("#%d", off + framesize + argstack));
+												op2("ADD", "IY", "SP");
+												op1("PUSH", "IY");
+												op1("POP", wreg[dreg]);
+			}
+#endif
+			break;
+		}
+		case LOAD+I+sizeop(1):
+		case LOAD+U+sizeop(1): {
+			int dreg = REG(p);
+			if(IS_LEFT_CONST(p)) {
+				char *val = LEFT_VAL(p);
+												comment(STR("Load %s into %s", val, breg[dreg]));
+												op2("LD", breg[dreg], STR("#<%s", val));
+			} else {
+				int sreg = LEFT_REG(p);
+				if(opsize(LEFT_NODE(p)->op) == 1) {
+												comment(STR("Load %s into %s", breg[sreg], breg[dreg]));
+												op2("LD", breg[dreg], breg[sreg]);
+				} else if(opsize(LEFT_NODE(p)->op) == 2) {
+												comment(STR("Load %s into %s", lreg[sreg], breg[dreg]));
+												op2("LD", breg[dreg], lreg[sreg]);
+				} else if(opsize(LEFT_NODE(p)->op) == 4) {
+												comment(STR("Load %s into %s", xreg[sreg], breg[dreg]));
+												op2("LD", "A", STR("(%s)", xreg[sreg]));
+												op2("LD", breg[dreg], "A");
+				}
+			}
+			break;
+		}
+		case LOAD+I+sizeop(2):
+		case LOAD+U+sizeop(2):
+		case LOAD+P+sizeop(2): {
+			int dreg = REG(p);
+			if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+				char *dst = wreg[dreg];
+				char *val = LEFT_VAL(p);
+												comment(STR("Load %s into %s", val, dst));
+												op2("LD", dst, STR("#%s", val));
+			} else {
+				int sreg = LEFT_REG(p);
+												comment(STR("Load %s into %s", wreg[sreg], wreg[dreg]));
+#ifdef GAMEBOY
+												op2("LD", hreg[dreg], hreg[sreg]);
+												op2("LD", lreg[dreg], lreg[sreg]);
+#else
+				if(sreg == IX || sreg == IY || dreg == IX || dreg == IY) {
+												op1("PUSH", wreg[sreg]);
+												op1("POP", wreg[dreg]);
+				} else {
+												op2("LD", hreg[dreg], hreg[sreg]);
+												op2("LD", lreg[dreg], lreg[sreg]);
+				}
+#endif
+			}
+			break;
+		}
+		case ADD+I+sizeop(1):
+		case ADD+U+sizeop(1):
+		case SUB+I+sizeop(1):
+		case SUB+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_REG(p);
+			if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_ADDRFP(RIGHT_NODE(p)) || IS_LEFT_ADDRLP(RIGHT_NODE(p)))) {
+				int off = const_val(LEFT_NODE(RIGHT_NODE(p)));
+												comment(STR("Add/sub (mem) to/from %s into %s", breg[sreg1], breg[dreg]));
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+												op2("LD", "A", breg[sreg1]);
+												op1(generic(p->op) == ADD ? "ADD" : "SUB", "(HL)");
+#else
+												op2("LD", "A", breg[sreg1]);
+												op1(generic(p->op) == ADD ? "ADD" : "SUB", STR("%d(IX)", off));
+#endif
+												op2("LD", breg[dreg], "A");
+			} else if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_CONST(RIGHT_NODE(p)) || IS_LEFT_ADDRGP(RIGHT_NODE(p)))) {
+				char *addr = LEFT_VAL(RIGHT_NODE(p));
+												comment(STR("Add/sub (mem) to/from %s into %s", breg[sreg1], breg[dreg]));
+												op2("LD", "A", STR("(%s)", addr));
+												op1(generic(p->op) == ADD ? "ADD" : "SUB", breg[sreg1]);
+												op2("LD", breg[dreg], "A");
+			} else if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+				int n = const_val(RIGHT_NODE(p));
+												comment(STR("Add/sub %s to %s/from into %s", val, breg[sreg1], breg[dreg]));
+				if(n > 0 && n <= 2) {
+					if(sreg1 != dreg)
+												op2("LD", breg[dreg], breg[sreg1]);
+					while(n--)
+												op1(generic(p->op) == ADD ? "INC" : "DEC", breg[dreg]);
+				} else if(n >= -2 && n < 0) {
+					if(sreg1 != dreg)
+												op2("LD", breg[dreg], breg[sreg1]);
+					while(n++)
+												op1(generic(p->op) == ADD ? "DEC" : "INC", breg[dreg]);
+				} else {
+												op2("LD", "A", breg[sreg1]);
+												op1(generic(p->op) == ADD ? "ADD" : "SUB", STR("#<%s", val));
+												op2("LD", breg[dreg], "A");
+				}
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				if(IS_RIGHT_INDIR(p)) {
+												comment(STR("Add/sub (mem) to/from %s into %s", breg[sreg1], breg[dreg]));
+					if(generic(p->op) == ADD) {
+												op2("LD", "A", STR("(%s)", wreg[sreg2]));
+												op1("ADD", breg[sreg1]);
+												op2("LD", breg[dreg], "A");
+					} else if(sreg2 == HL) {
+												op2("LD", "A", breg[sreg1]);
+												op1("SUB", "(HL)");
+												op2("LD", breg[dreg], "A");
+					} else {
+												op2("LD", "A", STR("(%s)", wreg[sreg2]));
+												op1("SUB", breg[sreg1]);
+#ifdef GAMEBOY
+												op0("CPL");
+												op1("INC", "A");
+#else
+												op0("NEG");
+#endif
+												op2("LD", breg[dreg], "A");
+					}
+				} else {
+												comment(STR("Add/sub %s to/from %s into %s", breg[sreg2], breg[sreg1], breg[dreg]));
+												op2("LD", "A", breg[sreg1]);
+												op1(generic(p->op) == ADD ? "ADD" : "SUB", breg[sreg2]);
+												op2("LD", breg[dreg], "A");
+				}
+			}
+			break;
+		}
+		case ADD+I+sizeop(2):
+		case ADD+U+sizeop(2):
+		case ADD+P+sizeop(2):
+		case SUB+I+sizeop(2):
+		case SUB+U+sizeop(2):
+		case SUB+P+sizeop(2): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_REG(p);
+			assert(opsize(LEFT_NODE(p)->op) == 2);
+			if(IS_RIGHT_CONST(p) || IS_RIGHT_ADDRGP(p)) {
+				char *val = RIGHT_VAL(p);
+				int n = IS_RIGHT_CONST(p) ? const_val(RIGHT_NODE(p)) : 0;
+												comment(STR("Add/sub %s to/from %s into %s", val, wreg[sreg1], wreg[dreg]));
+				if(n > 0 && n <= 3) {
+					if(sreg1 != dreg) {
+												op2("LD", hreg[dreg], hreg[sreg1]);
+												op2("LD", lreg[dreg], lreg[sreg1]);
+					}
+					while(n--)
+												op1(generic(p->op) == ADD ? "INC" : "DEC", wreg[dreg]);
+				} else if(n >= -3 && n < 0) {
+					if(sreg1 != dreg) {
+												op2("LD", hreg[dreg], hreg[sreg1]);
+												op2("LD", lreg[dreg], lreg[sreg1]);
+					}
+					while(n++)
+												op1(generic(p->op) == ADD ? "DEC" : "INC", wreg[dreg]);
+				} else {
+					int treg = tmp16(DE) ? DE : tmp16(BC) ? BC : -1;
+					if(treg >= 0 && generic(p->op) == ADD && sreg1 == HL && dreg == HL) {
+												op2("LD", wreg[treg], STR("#%s", val));
+												op2("ADD", "HL", wreg[treg]);
+					} else if(generic(p->op) == ADD && sreg1 != HL && dreg == HL) {
+												op2("LD", "HL", STR("#%s", val));
+												op2("ADD", "HL", wreg[sreg1]);
+#ifdef GAMEBOY
+					} else if(generic(p->op) == ADD) {
+												op2("LD", "HL", STR("#%s", val));
+												op2("ADD", "HL", wreg[sreg1]);
+												op2("LD", hreg[dreg], "H");
+												op2("LD", lreg[dreg], "L");
+#else
+					} else if(treg >= 0 && generic(p->op) == SUB && sreg1 == HL && dreg == HL) {
+												op2("LD", wreg[treg], STR("#%s", val));
+												op1("OR", "A");
+												op2("SBC", "HL", wreg[sreg1]);
+#endif
+					} else {
+												op2("LD", "A", lreg[sreg1]);
+												op1(generic(p->op) == ADD ? "ADD" : "SUB", STR("#<%s", val));
+												op2("LD", lreg[dreg], "A");
+												op2("LD", "A", hreg[sreg1]);
+												op1(generic(p->op) == ADD ? "ADC" : "SBC", STR("#>%s", val));
+												op2("LD", hreg[dreg], "A");
+					}
+				}
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				assert(opsize(RIGHT_NODE(p)->op) == 2);
+												comment(STR("Add/sub %s to/from %s into %s", wreg[sreg2], wreg[sreg1], wreg[dreg]));
+				if(generic(p->op) == ADD && dreg == HL) {
+					if(sreg2 == HL) {
+												op2("ADD", "HL", wreg[sreg1]);
+					} else if(sreg1 == HL) {
+												op2("ADD", "HL", wreg[sreg2]);
+					} else {
+												op2("LD", "H", hreg[sreg1]);
+												op2("LD", "L", lreg[sreg1]);
+												op2("ADD", "HL", wreg[sreg2]);
+					}
+#ifdef GAMEBOY
+#else
+				} else if(generic(p->op) == SUB && sreg1 == HL && dreg == HL) {
+												op1("OR", "A");
+												op2("SBC", "HL", wreg[sreg2]);
+				} else if(generic(p->op) == SUB && sreg1 == DE && dreg == DE) {
+												op2("EX", "DE", "HL");
+					if(sreg2 == HL)
+						sreg2 = DE;
+					else if(sreg2 == DE)
+						sreg2 = HL;
+												op1("OR", "A");
+												op2("SBC", "HL", wreg[sreg2]);
+												op2("EX", "DE", "HL");
+#endif
+				} else {
+												op2("LD", "A", lreg[sreg1]);
+												op1(generic(p->op) == ADD ? "ADD" : "SUB", lreg[sreg2]);
+												op2("LD", lreg[dreg], "A");
+												op2("LD", "A", hreg[sreg1]);
+												op1(generic(p->op) == ADD ? "ADC" : "SBC", hreg[sreg2]);
+												op2("LD", hreg[dreg], "A");
+				}
+			}
+			break;
+		}
+		case BAND+I+sizeop(1):
+		case BAND+U+sizeop(1):
+		case BOR+I+sizeop(1):
+		case BOR+U+sizeop(1):
+		case BXOR+I+sizeop(1):
+		case BXOR+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_REG(p);
+			if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_ADDRFP(RIGHT_NODE(p)) || IS_LEFT_ADDRLP(RIGHT_NODE(p)))) {
+				int off = const_val(LEFT_NODE(RIGHT_NODE(p)));
+												comment(STR("And (mem) and %s into %s", breg[sreg1], breg[dreg]));
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+												op2("LD", "A", "(HL)");
+#else
+												op2("LD", "A", STR("%d(IX)", off));
+#endif
+				if(generic(p->op) == BAND) {
+												op1("AND", breg[sreg1]);
+				} else if(generic(p->op) == BOR) {
+												op1("OR", breg[sreg1]);
+				} else if(generic(p->op) == BXOR) {
+												op1("XOR", breg[sreg1]);
+				}
+												op2("LD", breg[dreg], "A");
+			} else if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_CONST(RIGHT_NODE(p)) || IS_LEFT_ADDRGP(RIGHT_NODE(p)))) {
+				char *addr = LEFT_VAL(RIGHT_NODE(p));
+												comment(STR("And (mem) and %s into %s", breg[sreg1], breg[dreg]));
+												op2("LD", "A", STR("(%s)", addr));
+				if(generic(p->op) == BAND) {
+												op1("AND", breg[sreg1]);
+				} else if(generic(p->op) == BOR) {
+												op1("OR", breg[sreg1]);
+				} else if(generic(p->op) == BXOR) {
+												op1("XOR", breg[sreg1]);
+				}
+												op2("LD", breg[dreg], "A");
+			} else if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+												comment(STR("And %s and %s into %s", val, breg[sreg1], breg[dreg]));
+												op2("LD", "A", STR("#<%s", val));
+				if(generic(p->op) == BAND) {
+												op1("AND", breg[sreg1]);
+				} else if(generic(p->op) == BOR) {
+												op1("OR", breg[sreg1]);
+				} else if(generic(p->op) == BXOR) {
+												op1("XOR", breg[sreg1]);
+				}
+												op2("LD", breg[dreg], "A");
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				if(IS_RIGHT_INDIR(p)) {
+												comment(STR("And (mem) and %s into %s", breg[sreg1], breg[dreg]));
+												op2("LD", "A", STR("(%s)", wreg[sreg2]));
+					if(generic(p->op) == BAND) {
+												op1("AND", breg[sreg1]);
+					} else if(generic(p->op) == BOR) {
+												op1("OR", breg[sreg1]);
+					} else if(generic(p->op) == BXOR) {
+												op1("XOR", breg[sreg1]);
+					}
+												op2("LD", breg[dreg], "A");
+				} else {
+												comment(STR("And %s and %s into %s", breg[sreg2], breg[sreg1], breg[dreg]));
+												op2("LD", "A", breg[sreg2]);
+					if(generic(p->op) == BAND) {
+												op1("AND", breg[sreg1]);
+					} else if(generic(p->op) == BOR) {
+												op1("OR", breg[sreg1]);
+					} else if(generic(p->op) == BXOR) {
+												op1("XOR", breg[sreg1]);
+					}
+												op2("LD", breg[dreg], "A");
+				}
+			}
+			break;
+		}
+		case BAND+I+sizeop(2):
+		case BAND+U+sizeop(2):
+		case BOR+I+sizeop(2):
+		case BOR+U+sizeop(2):
+		case BXOR+I+sizeop(2):
+		case BXOR+U+sizeop(2): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_REG(p);
+			assert(opsize(LEFT_NODE(p)->op) == 2);
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+												comment(STR("And %s and %s into %s", val, wreg[sreg1], wreg[dreg]));
+												op2("LD", "A", STR("#<%s", val));
+				if(generic(p->op) == BAND) {
+												op1("AND", lreg[sreg1]);
+				} else if(generic(p->op) == BOR) {
+												op1("OR", lreg[sreg1]);
+				} else if(generic(p->op) == BXOR) {
+												op1("XOR", lreg[sreg1]);
+				}
+												op2("LD", lreg[dreg], "A");
+												op2("LD", "A", STR("#>%s", val));
+				if(generic(p->op) == BAND) {
+												op1("AND", hreg[sreg1]);
+				} else if(generic(p->op) == BOR) {
+												op1("OR", hreg[sreg1]);
+				} else if(generic(p->op) == BXOR) {
+												op1("XOR", hreg[sreg1]);
+				}
+												op2("LD", hreg[dreg], "A");
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				assert(opsize(RIGHT_NODE(p)->op) == 2);
+												comment(STR("And %s and %s into %s", wreg[sreg2], wreg[sreg1], wreg[dreg]));
+												op2("LD", "A", lreg[sreg2]);
+				if(generic(p->op) == BAND) {
+												op1("AND", lreg[sreg1]);
+				} else if(generic(p->op) == BOR) {
+												op1("OR", lreg[sreg1]);
+				} else if(generic(p->op) == BXOR) {
+												op1("XOR", lreg[sreg1]);
+				}
+												op2("LD", lreg[dreg], "A");
+												op2("LD", "A", hreg[sreg2]);
+				if(generic(p->op) == BAND) {
+												op1("AND", hreg[sreg1]);
+				} else if(generic(p->op) == BOR) {
+												op1("OR", hreg[sreg1]);
+				} else if(generic(p->op) == BXOR) {
+												op1("XOR", hreg[sreg1]);
+				}
+												op2("LD", hreg[dreg], "A");
+			}
+			break;
+		}
+		case BCOM+I+sizeop(1):
+		case BCOM+U+sizeop(1): {
+			int dreg = REG(p);
+			if(IS_LEFT_INDIR(p) &&
+				(IS_LEFT_ADDRFP(LEFT_NODE(p)) || IS_LEFT_ADDRLP(LEFT_NODE(p)))) {
+				int off = const_val(LEFT_NODE(LEFT_NODE(p)));
+												comment(STR("Complement (mem) into %s", breg[dreg]));
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+												op2("LD", "A", "(HL)");
+#else
+												op2("LD", "A", STR("%d(IX)", off));
+#endif
+												op0("CPL");
+												op2("LD", breg[dreg], "A");
+			} else if(IS_LEFT_INDIR(p) &&
+				(IS_LEFT_CONST(LEFT_NODE(p)) || IS_LEFT_ADDRGP(LEFT_NODE(p)))) {
+				char *addr = LEFT_VAL(LEFT_NODE(p));
+												comment(STR("Complement (mem) into %s", breg[dreg]));
+												op2("LD", "A", STR("(%s)", addr));
+												op0("CPL");
+												op2("LD", breg[dreg], "A");
+			} else {
+				int sreg = LEFT_REG(p);
+				if(IS_LEFT_INDIR(p)) {
+												comment(STR("Complement (mem) into %s", breg[dreg]));
+												op2("LD", "A", STR("(%s)", wreg[sreg]));
+												op0("CPL");
+												op2("LD", breg[dreg], "A");
+				} else {
+												comment(STR("Complement %s into %s", breg[sreg], breg[dreg]));
+												op2("LD", "A", breg[sreg]);
+												op0("CPL");
+												op2("LD", breg[dreg], "A");
+				}
+			}
+			break;
+		}
+		case BCOM+I+sizeop(2):
+		case BCOM+U+sizeop(2): {
+			int dreg = REG(p);
+			int sreg = LEFT_REG(p);
+												comment(STR("Complement %s into %s", wreg[dreg], wreg[sreg]));
+												op2("LD", "A", lreg[sreg]);
+												op0("CPL");
+												op2("LD", lreg[dreg], "A");
+												op2("LD", "A", hreg[sreg]);
+												op0("CPL");
+												op2("LD", hreg[dreg], "A");
+			break;
+		}
+		case NEG+I+sizeop(1): {
+			int dreg = REG(p);
+			if(IS_LEFT_INDIR(p) &&
+				(IS_LEFT_ADDRFP(LEFT_NODE(p)) || IS_LEFT_ADDRLP(LEFT_NODE(p)))) {
+				int off = const_val(LEFT_NODE(LEFT_NODE(p)));
+												comment(STR("Negate (mem) into %s", breg[dreg]));
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+												op1("XOR", "A");
+												op1("SUB", "(HL)");
+#else
+												op1("XOR", "A");
+												op1("SUB", STR("%d(IX)", off));
+#endif
+												op2("LD", breg[dreg], "A");
+			} else if(IS_LEFT_INDIR(p) &&
+				(IS_LEFT_CONST(LEFT_NODE(p)) || IS_LEFT_ADDRGP(LEFT_NODE(p)))) {
+				char *addr = LEFT_VAL(LEFT_NODE(p));
+												comment(STR("Negate (mem) into %s", breg[dreg]));
+												op2("LD", "A", STR("(%s)", addr));
+#ifdef GAMEBOY
+												op0("CPL");
+												op1("INC", "A");
+#else
+												op0("NEG");
+#endif
+												op2("LD", breg[dreg], "A");
+			} else {
+				int sreg = LEFT_REG(p);
+				if(IS_LEFT_INDIR(p)) {
+												comment(STR("Negate (mem) into %s", breg[dreg]));
+												op2("LD", "A", STR("(%s)", wreg[sreg]));
+#ifdef GAMEBOY
+												op0("CPL");
+												op1("INC", "A");
+#else
+												op0("NEG");
+#endif
+												op2("LD", breg[dreg], "A");
+				} else {
+												comment(STR("Negate %s into %s", breg[sreg], breg[dreg]));
+												op1("XOR", "A");
+												op1("SUB", breg[sreg]);
+												op2("LD", breg[dreg], "A");
+				}
+			}
+			break;
+		}
+		case NEG+I+sizeop(2): {
+			int dreg = REG(p);
+			int sreg = LEFT_REG(p);
+												comment(STR("Negate %s into %s", wreg[dreg], wreg[sreg]));
+#ifdef GAMEBOY
+#else
+			if(sreg != HL && dreg == HL) {
+												op2("LD", "HL", "#0x0000");
+												op1("OR", "A");
+												op1("SBC", wreg[sreg]);
+			} else
+#endif
+			{
+												op1("XOR", "A");
+												op1("SUB", lreg[sreg]);
+												op2("LD", lreg[dreg], "A");
+												op2("LD", "A", "#0x00 ; LD does not change flags!!!");
+												op1("SBC", hreg[sreg]);
+												op2("LD", hreg[dreg], "A");
+			}
+			break;
+		}
+		case BCOM+I+sizeop(4):
+		case BCOM+U+sizeop(4):
+		case NEG+I+sizeop(4):
+		case NEG+U+sizeop(4):
+		case NEG+F+sizeop(4): {
+												comment("Long/floating point negate/complement");
+			save(BC);
+			save(DE);
+#ifdef GAMEBOY
+#else
+			save(HL);
+#endif
+			load_32(LEFT_NODE(p));
+			if(generic(p->op) == NEG) {
+												op1(".globl", optype((p)->op)==F ? ".fneg32" : ".neg32");
+												op1("CALL", optype((p)->op)==F ? ".fneg32" : ".neg32");
+			} else if(generic(p->op) == BXOR) {
+												op1(".globl", ".cpl32");
+												op1("CALL", ".cpl32");
+			}
+			store_32(p);
+#ifdef GAMEBOY
+#else
+			restore(HL);
+#endif
+			restore(DE);
+			restore(BC);
+			break;
+		}
+		case EQ+I+sizeop(1):
+		case EQ+U+sizeop(1):
+		case NE+I+sizeop(1):
+		case NE+U+sizeop(1): {
+			char *jmp = p->syms[0]->x.name;
+			if(IS_LEFT_INDIR(p)) {
+				char *val;
+				assert(IS_RIGHT_CONST(p));
+				val = RIGHT_VAL(p);
+				if(IS_LEFT_ADDRFP(LEFT_NODE(p)) || IS_LEFT_ADDRLP(LEFT_NODE(p))) {
+					int off = const_val(LEFT_NODE(LEFT_NODE(p)));
+												comment(STR("Compare EQ/NE (mem) and %s", val));
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+												op2("LD", "A", STR("#<%s", val));
+												op1("CP", "(HL)");
+#else
+												op2("LD", "A", STR("#<%s", val));
+												op1("CP", STR("%d(IX)", off));
+#endif
+												op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+				} else if(IS_LEFT_CONST(LEFT_NODE(p)) || IS_LEFT_ADDRGP(LEFT_NODE(p))) {
+					char *addr = LEFT_VAL(LEFT_NODE(p));
+												comment(STR("Compare EQ/NE (mem) and %s", val));
+												op2("LD", "A", STR("(%s)", addr));
+												op1("CP", STR("#<%s", val));
+												op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+				} else {
+					int sreg = LEFT_REG(p);
+												comment(STR("Compare EQ/NE (mem) and %s", val));
+												op2("LD", "A", STR("(%s)", wreg[sreg]));
+												op1("CP", STR("#<%s", val));
+												op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+				}
+			} else {
+				int sreg = LEFT_REG(p);
+				if(IS_RIGHT_INDIR(p) &&
+					(IS_LEFT_ADDRFP(RIGHT_NODE(p)) || IS_LEFT_ADDRLP(RIGHT_NODE(p)))) {
+					int off = const_val(LEFT_NODE(RIGHT_NODE(p)));
+												comment(STR("Compare EQ/NE %s and (mem)", breg[sreg]));
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+												op2("LD", "A", breg[sreg]);
+												op1("CP", "(HL)");
+#else
+												op2("LD", "A", breg[sreg]);
+												op1("CP", STR("%d(IX)", off));
+#endif
+												op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+				} else if(IS_RIGHT_INDIR(p) &&
+					(IS_LEFT_CONST(RIGHT_NODE(p)) || IS_LEFT_ADDRGP(RIGHT_NODE(p)))) {
+					char *addr = LEFT_VAL(RIGHT_NODE(p));
+												comment(STR("Compare EQ/NE %s and (mem)", breg[sreg]));
+												op2("LD", "A", STR("(%s)", addr));
+												op1("CP", breg[sreg]);
+												op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+				} else if(IS_RIGHT_CONST(p)) {
+					char *val = RIGHT_VAL(p);
+												comment(STR("Compare EQ/NE %s and %s", breg[sreg], val));
+												op2("LD", "A", breg[sreg]);
+												op1("CP", STR("#<%s", val));
+												op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+				} else {
+					int sreg2 = RIGHT_REG(p);
+					if(IS_RIGHT_INDIR(p)) {
+												comment(STR("Compare EQ/NE %s and (mem)", breg[sreg]));
+												op2("LD", "A", STR("(%s)", wreg[sreg2]));
+												op1("CP", breg[sreg]);
+												op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+					} else {
+												comment(STR("Compare EQ/NE %s and %s", breg[sreg], breg[sreg2]));
+												op2("LD", "A", breg[sreg2]);
+												op1("CP", breg[sreg]);
+												op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+					}
+				}
+			}
+			break;
+		}
+		case EQ+I+sizeop(2):
+		case EQ+U+sizeop(2):
+		case NE+I+sizeop(2):
+		case NE+U+sizeop(2): {
+			int lab = genlabel(1);
+			int sreg = LEFT_REG(p);
+			char *src1 = wreg[sreg];
+			char *jmp = p->syms[0]->x.name;
+			assert(opsize(LEFT_NODE(p)->op) == 2);
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+												comment(STR("Compare EQ/NE %s and %s", src1, val));
+												op2("LD", "A", lreg[sreg]);
+												op1("CP", STR("#<%s", val));
+				if(generic(p->op) == EQ) {
+												op2("JR", "NZ", STR(".L%d", lab));
+				} else {
+												op2("JP", "NZ", jmp);
+				}
+												op2("LD", "A", hreg[sreg]);
+												op1("CP", STR("#>%s", val));
+												op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+												label(STR(".L%d:", lab));
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				char *src2 = wreg[sreg2];
+				assert(opsize(RIGHT_NODE(p)->op) == 2);
+												comment(STR("Compare EQ/NE %s and %s", src1, src2));
+												op2("LD", "A", lreg[sreg2]);
+												op1("CP", lreg[sreg]);
+				if(generic(p->op) == EQ) {
+												op2("JR", "NZ", STR(".L%d", lab));
+				} else {
+												op2("JP", "NZ", jmp);
+				}
+												op2("LD", "A", hreg[sreg2]);
+												op1("CP", hreg[sreg]);
+												op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+												label(STR(".L%d:", lab));
+			}
+			break;
+		}
+		case GE+I+sizeop(1):
+		case GE+U+sizeop(1):
+		case LT+I+sizeop(1):
+		case LT+U+sizeop(1): {
+			char *jmp = p->syms[0]->x.name;
+			if(IS_LEFT_INDIR(p)) {
+				char *val;
+				int n;
+				assert(IS_RIGHT_CONST(p));
+				val = RIGHT_VAL(p);
+				n = const_val(RIGHT_NODE(p));
+				if(IS_LEFT_ADDRFP(LEFT_NODE(p)) || IS_LEFT_ADDRLP(LEFT_NODE(p))) {
+					int off = const_val(LEFT_NODE(LEFT_NODE(p)));
+												comment(STR("Compare GE/LT (mem) and %s", val));
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+												op2("LD", "A", "(HL)");
+#else
+												op2("LD", "A", STR("%d(IX)", off));
+#endif
+					if(optype(p->op) == I) {
+												op1("ADD", "#0x80");
+												op1("CP", STR("#<%d", n^0x80));
+					} else {
+												op1("CP", STR("#<%s", val));
+					}
+												op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+				} else if(IS_LEFT_CONST(LEFT_NODE(p)) || IS_LEFT_ADDRGP(LEFT_NODE(p))) {
+					char *addr = LEFT_VAL(LEFT_NODE(p));
+												comment(STR("Compare GE/LT (mem) and %s", val));
+												op2("LD", "A", STR("(%s)", addr));
+					if(optype(p->op) == I) {
+												op1("ADD", "#0x80");
+												op1("CP", STR("#<%d", n^0x80));
+					} else {
+												op1("CP", STR("#<%s", val));
+					}
+												op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+				} else {
+					int sreg = LEFT_REG(p);
+												comment(STR("Compare GE/LT (mem) and %s", val));
+												op2("LD", "A", STR("(%s)", wreg[sreg]));
+					if(optype(p->op) == I) {
+												op1("ADD", "#0x80");
+												op1("CP", STR("#<%d", n^0x80));
+					} else {
+												op1("CP", STR("#<%s", val));
+					}
+												op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+				}
+			} else {
+				int sreg = LEFT_REG(p);
+				if(IS_RIGHT_INDIR(p) &&
+					(IS_LEFT_ADDRFP(RIGHT_NODE(p)) || IS_LEFT_ADDRLP(RIGHT_NODE(p)))) {
+					int off = const_val(LEFT_NODE(RIGHT_NODE(p)));
+												comment(STR("Compare GE/LT %s and (mem)", breg[sreg]));
+					if(optype(p->op) == I) {
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+												op2("LD", "A", "(HL)");
+												op1("ADD", "#0x80");
+												op2("LD", "L", "A");
+												op2("LD", "A", breg[sreg]);
+												op1("ADD", "#0x80");
+												op1("CP", "L");
+												op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+#else
+						int lab1 = genlabel(1);
+						int lab2 = genlabel(1);
+												op2("LD", "A", breg[sreg]);
+												op1("CP", STR("%d(IX)", off));
+												op2("JP", "PE", STR(".L%d", lab1));
+												op2("JP", (generic(p->op) == GE ? "P" : "M"), jmp);
+												op1("JR", STR(".L%d", lab2));
+												label(STR(".L%d:", lab1));
+												op2("JP", (generic(p->op) == GE ? "M" : "P"), jmp);
+												label(STR(".L%d:", lab2));
+#endif
+					} else {
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+												op2("LD", "A", breg[sreg]);
+												op1("CP", "(HL)");
+#else
+												op2("LD", "A", breg[sreg]);
+												op1("CP", STR("%d(IX)", off));
+#endif
+												op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+					}
+				} else if(IS_RIGHT_INDIR(p) &&
+					(IS_LEFT_CONST(RIGHT_NODE(p)) || IS_LEFT_ADDRGP(RIGHT_NODE(p)))) {
+					char *addr = LEFT_VAL(RIGHT_NODE(p));
+												comment(STR("Compare GE/LT %s and (mem)", breg[sreg]));
+					if(optype(p->op) == I) {
+#ifdef GAMEBOY
+												op2("LD", "A", STR("(%s)", addr));
+												op1("ADD", "#0x80");
+												op2("LD", "L", "A");
+												op2("LD", "A", breg[sreg]);
+												op1("ADD", "#0x80");
+												op1("CP", "L");
+												op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+#else
+						int lab1 = genlabel(1);
+						int lab2 = genlabel(1);
+												op2("LD", "A", STR("(%s)", addr));
+												op1("CP", breg[sreg]);
+												op2("JP", "PE", STR(".L%d", lab1));
+												if(generic(p->op) == GE) {
+													op2("JP", "Z", jmp);
+												} else {
+													op2("JR", "Z", STR(".L%d", lab2));
+												}
+												op2("JP", (generic(p->op) == GE ? "M" : "P"), jmp);
+												op1("JR", STR(".L%d", lab2));
+												label(STR(".L%d:", lab1));
+												op2("JP", (generic(p->op) == GE ? "P" : "M"), jmp);
+												label(STR(".L%d:", lab2));
+#endif
+					} else {
+#ifdef GAMEBOY
+												op2("LD", "HL", STR("#%s", addr));
+												op2("LD", "A", breg[sreg]);
+												op1("CP", "(HL)");
+												op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+#else
+						int lab = genlabel(1);
+												op2("LD", "A", STR("(%s)", addr));
+												op1("CP", breg[sreg]);
+												if(generic(p->op) == GE) {
+													op2("JP", "C", jmp);
+													op2("JP", "Z", jmp);
+												} else {
+													op2("JR", "Z", STR(".L%d", lab));
+													op2("JP", "NC", jmp);
+												}
+												label(STR(".L%d:", lab));
+#endif
+					}
+				} else if(IS_RIGHT_CONST(p)) {
+					char *val = RIGHT_VAL(p);
+					int n = const_val(RIGHT_NODE(p));
+												comment(STR("Compare GE/LT %s and %s", breg[sreg], val));
+					if(optype(p->op) == I) {
+												op2("LD", "A", breg[sreg]);
+												op1("ADD", "#0x80");
+												op1("CP", STR("#<%d", n^0x80));
+												op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+					} else {
+												op2("LD", "A", breg[sreg]);
+												op1("CP", STR("#<%s", val));
+												op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+					}
+				} else {
+					int sreg2 = RIGHT_REG(p);
+					if(IS_RIGHT_INDIR(p)) {
+												comment(STR("Compare GE/LT %s and (mem)", breg[sreg]));
+						if(optype(p->op) == I) {
+#ifdef GAMEBOY
+												op2("LD", "A", STR("(%s)",  wreg[sreg2]));
+												op1("ADD", "#0x80");
+												op2("LD", "L", "A");
+												op2("LD", "A", breg[sreg]);
+												op1("ADD", "#0x80");
+												op1("CP", "L");
+												op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+#else
+							int lab1 = genlabel(1);
+							int lab2 = genlabel(1);
+							if(sreg2 == HL) {
+												op2("LD", "A", breg[sreg]);
+												op1("CP", "(HL)");
+												op2("JP", "PE", STR(".L%d", lab1));
+												op2("JP", (generic(p->op) == GE ? "P" : "M"), jmp);
+												op1("JR", STR(".L%d", lab2));
+												label(STR(".L%d:", lab1));
+												op2("JP", (generic(p->op) == GE ? "M" : "P"), jmp);
+												label(STR(".L%d:", lab2));
+							} else {
+												op2("LD", "A", STR("(%s)", wreg[sreg2]));
+												op1("CP", breg[sreg]);
+												op2("JP", "PE", STR(".L%d", lab1));
+												if(generic(p->op) == GE) {
+													op2("JP", "Z", jmp);
+												} else {
+													op2("JR", "Z", STR(".L%d", lab2));
+												}
+												op2("JP", (generic(p->op) == GE ? "M" : "P"), jmp);
+												op1("JR", STR(".L%d", lab2));
+												label(STR(".L%d:", lab1));
+												op2("JP", (generic(p->op) == GE ? "P" : "M"), jmp);
+												label(STR(".L%d:", lab2));
+							}
+#endif
+						} else {
+#ifdef GAMEBOY
+							if(sreg2 != HL) {
+												op2("LD", "H", hreg[sreg2]);
+												op2("LD", "L", lreg[sreg2]);
+							}
+												op2("LD", "A", breg[sreg]);
+												op1("CP", "(HL)");
+												op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+#else
+							if(sreg2 == HL) {
+												op2("LD", "A", breg[sreg]);
+												op1("CP", "(HL)");
+												op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+							} else {
+								int lab = genlabel(1);
+												op2("LD", "A", STR("(%s)", wreg[sreg2]));
+												op1("CP", breg[sreg]);
+												if(generic(p->op) == GE) {
+													op2("JP", "C", jmp);
+													op2("JP", "Z", jmp);
+												} else {
+													op2("JR", "Z", STR(".L%d", lab));
+													op2("JP", "NC", jmp);
+												}
+												label(STR(".L%d:", lab));
+							}
+#endif
+						}
+					} else {
+												comment(STR("Compare GE/LT %s and %s", breg[sreg], breg[sreg2]));
+						if(optype(p->op) == I) {
+#ifdef GAMEBOY
+												op2("LD", "A", breg[sreg2]);
+												op1("ADD", "#0x80");
+												op2("LD", "L", "A");
+												op2("LD", "A", breg[sreg]);
+												op1("ADD", "#0x80");
+												op1("CP", "L");
+												op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+#else
+						int lab1 = genlabel(1);
+						int lab2 = genlabel(1);
+												op2("LD", "A", breg[sreg]);
+												op1("CP", breg[sreg2]);
+												op2("JP", "PE", STR(".L%d", lab1));
+												op2("JP", (generic(p->op) == GE ? "P" : "M"), jmp);
+												op1("JR", STR(".L%d", lab2));
+												label(STR(".L%d:", lab1));
+												op2("JP", (generic(p->op) == GE ? "M" : "P"), jmp);
+												label(STR(".L%d:", lab2));
+#endif
+						} else {
+												op2("LD", "A", breg[sreg]);
+												op1("CP", breg[sreg2]);
+												op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+						}
+					}
+				}
+			}
+			break;
+		}
+		case GE+I+sizeop(2):
+		case GE+U+sizeop(2):
+		case LT+I+sizeop(2):
+		case LT+U+sizeop(2): {
+			int lab = genlabel(1);
+			int sreg = LEFT_REG(p);
+			char *jmp = p->syms[0]->x.name;
+			assert(opsize(LEFT_NODE(p)->op) == 2);
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+				int n = const_val(RIGHT_NODE(p));
+												comment(STR("Compare GE/LT %s and %s", wreg[sreg], val));
+				if(optype(p->op) == I) {
+												op2("LD", "A", hreg[sreg]);
+												op1("ADD", "#0x80");
+												op1("CP", STR("#<%d", ((n>>8)&0xFF)^0x80));
+				} else {
+												op2("LD", "A", hreg[sreg]);
+												op1("CP", STR("#<%d", (n>>8)&0xFF));
+				}
+												op2("JR", "NZ", STR(".L%d", lab));
+												op2("LD", "A", lreg[sreg]);
+												op1("CP", STR("#%d", n&0xFF));
+												label(STR(".L%d:", lab));
+												op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				assert(opsize(RIGHT_NODE(p)->op) == 2);
+												comment(STR("Compare GE/LT %s and %s", wreg[sreg], wreg[sreg2]));
+				if(optype(p->op) == I) {
+#ifdef GAMEBOY
+												op2("LD", "A", hreg[sreg2]);
+												op1("ADD", "#0x80");
+												op2("LD", "L", "A");
+												op2("LD", "A", hreg[sreg]);
+												op1("ADD", "#0x80");
+												op1("CP", "L");
+												op2("JR", "NZ", STR(".L%d", lab));
+#else
+					int lab2 = genlabel(1);
+												op2("LD", "A", breg[sreg]);
+												op1("CP", breg[sreg2]);
+												op2("JR", "Z", STR(".L%d", lab2));
+												op2("JP", "PE", STR(".L%d", lab));
+												op2("JP", (generic(p->op) == GE ? "P" : "M"), jmp);
+												op1("JR", STR(".L%d", lab2));
+												label(STR(".L%d:", lab));
+												op2("JP", (generic(p->op) == GE ? "M" : "P"), jmp);
+												label(STR(".L%d:", lab2));
+#endif
+				} else {
+												op2("LD", "A", hreg[sreg]);
+												op1("CP", hreg[sreg2]);
+												op2("JR", "NZ", STR(".L%d", lab));
+				}
+												op2("LD", "A", lreg[sreg]);
+												op1("CP", lreg[sreg2]);
+												label(STR(".L%d:", lab));
+												op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+			}
+			break;
+		}
+		case LE+I+sizeop(1):
+		case LE+U+sizeop(1):
+		case GT+I+sizeop(1):
+		case GT+U+sizeop(1): {
+			char *jmp = p->syms[0]->x.name;
+			if(IS_LEFT_INDIR(p)) {
+				char *val;
+				int n;
+				assert(IS_RIGHT_CONST(p));
+				val = RIGHT_VAL(p);
+				n = const_val(RIGHT_NODE(p));
+				if(IS_LEFT_ADDRFP(LEFT_NODE(p)) || IS_LEFT_ADDRLP(LEFT_NODE(p))) {
+					int off = const_val(LEFT_NODE(LEFT_NODE(p)));
+												comment(STR("Compare LE/GT (mem) and %s", val));
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+												op2("LD", "A", "(HL)");
+#else
+												op2("LD", "A", STR("%d(IX)", off));
+#endif
+					if(optype(p->op) == I) {
+												op1("ADD", "#0x80");
+												op1("CP", STR("#<%d", n^0x80));
+						if(generic(p->op) == GT) {
+							int lab = genlabel(1);
+												op2("JR", "Z", STR(".L%d", lab));
+												op2("JP", "NC", jmp);
+												label(STR(".L%d:", lab));
+						} else {
+												op2("JP", "C", jmp);
+												op2("JP", "Z", jmp);
+						}
+					} else {
+												op2("LD", "A", STR("#<%s", val));
+#ifdef GAMEBOY
+												op1("CP", "(HL)");
+#else
+												op1("CP", STR("%d(IX)", off));
+#endif
+												op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+					}
+				} else if(IS_LEFT_CONST(LEFT_NODE(p)) || IS_LEFT_ADDRGP(LEFT_NODE(p))) {
+					char *addr = LEFT_VAL(LEFT_NODE(p));
+												comment(STR("Compare LE/GT (mem) and %s", val));
+					if(optype(p->op) == I) {
+												op2("LD", "A", STR("(%s)", addr));
+												op1("ADD", "#0x80");
+												op1("CP", STR("#<%d", n^0x80));
+					} else {
+												op2("LD", "A", STR("(%s)", addr));
+												op1("CP", STR("#<%s", val));
+					}
+					if(generic(p->op) == GT) {
+						int lab = genlabel(1);
+												op2("JR", "Z", STR(".L%d", lab));
+												op2("JP", "NC", jmp);
+												label(STR(".L%d:", lab));
+					} else {
+												op2("JP", "C", jmp);
+												op2("JP", "Z", jmp);
+					}
+				} else {
+					int sreg = LEFT_REG(p);
+												comment(STR("Compare LE/GT (mem) and %s", val));
+					if(optype(p->op) == I) {
+												op2("LD", "A", STR("(%s)", wreg[sreg]));
+												op1("ADD", "#0x80");
+												op1("CP", STR("#<%d", n^0x80));
+						if(generic(p->op) == GT) {
+							int lab = genlabel(1);
+												op2("JR", "Z", STR(".L%d", lab));
+												op2("JP", "NC", jmp);
+												label(STR(".L%d:", lab));
+						} else {
+												op2("JP", "C", jmp);
+												op2("JP", "Z", jmp);
+						}
+					} else if(sreg == HL) {
+												op2("LD", "A", STR("#<%d", val));
+												op1("CP", "(HL)");
+												op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+					} else {
+												op2("LD", "A", STR("(%s)", wreg[sreg]));
+												op1("CP", STR("#<%s", val));
+						if(generic(p->op) == GT) {
+							int lab = genlabel(1);
+												op2("JR", "Z", STR(".L%d", lab));
+												op2("JP", "NC", jmp);
+												label(STR(".L%d:", lab));
+						} else {
+												op2("JP", "C", jmp);
+												op2("JP", "Z", jmp);
+						}
+					}
+				}
+			} else {
+				int sreg = LEFT_REG(p);
+				if(IS_RIGHT_INDIR(p) &&
+					(IS_LEFT_ADDRFP(RIGHT_NODE(p)) || IS_LEFT_ADDRLP(RIGHT_NODE(p)))) {
+					int off = const_val(LEFT_NODE(RIGHT_NODE(p)));
+												comment(STR("Compare LE/GT %s and (mem)", breg[sreg]));
+					if(optype(p->op) == I) {
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+												op2("LD", "H", "(HL)");
+												op2("LD", "A", breg[sreg]);
+												op1("ADD", "#0x80");
+												op2("LD", "L", "A");
+												op2("LD", "A", "H");
+												op1("ADD", "#0x80");
+												op1("CP", "L");
+												op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+#else
+						int lab1 = genlabel(1);
+						int lab2 = genlabel(1);
+												op2("LD", "A", STR("%d(IX)", off));
+												op1("CP", breg[sreg]);
+												op2("JP", "PE", STR(".L%d", lab1));
+												op2("JP", (generic(p->op) == LE ? "P" : "M"), jmp);
+												op1("JR", STR(".L%d", lab2));
+												label(STR(".L%d:", lab1));
+												op2("JP", (generic(p->op) == LE ? "M" : "P"), jmp);
+												label(STR(".L%d:", lab2));
+#endif
+					} else {
+#ifdef GAMEBOY
+												offsethl(off + framesize + argstack);
+												op2("LD", "A", "(HL)");
+												op1("CP", breg[sreg]);
+#else
+												op2("LD", "A", STR("%d(IX)", off));
+												op1("CP", breg[sreg]);
+#endif
+												op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+					}
+				} else if(IS_RIGHT_INDIR(p) &&
+					(IS_LEFT_CONST(RIGHT_NODE(p)) || IS_LEFT_ADDRGP(RIGHT_NODE(p)))) {
+					char *addr = LEFT_VAL(RIGHT_NODE(p));
+												comment(STR("Compare LE/GT %s and (mem)", breg[sreg]));
+					if(optype(p->op) == I) {
+#ifdef GAMEBOY
+												op2("LD", "A", breg[sreg]);
+												op1("ADD", "#0x80");
+												op2("LD", "L", "A");
+												op2("LD", "A", STR("(%s)", addr));
+												op1("ADD", "#0x80");
+												op1("CP", "L");
+												op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+#else
+						int lab1 = genlabel(1);
+						int lab2 = genlabel(1);
+												op2("LD", "A", STR("(%s)", addr));
+												op1("CP", breg[sreg]);
+												op2("JP", "PE", STR(".L%d", lab1));
+												op2("JP", (generic(p->op) == LE ? "P" : "M"), jmp);
+												op1("JR", STR(".L%d", lab2));
+												label(STR(".L%d:", lab1));
+												op2("JP", (generic(p->op) == LE ? "M" : "P"), jmp);
+												label(STR(".L%d:", lab2));
+#endif
+					} else {
+												op2("LD", "A", STR("(%s)", addr));
+												op1("CP", breg[sreg]);
+												op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+					}
+				} else if(IS_RIGHT_CONST(p)) {
+					char *val = RIGHT_VAL(p);
+					int n = const_val(RIGHT_NODE(p));
+												comment(STR("Compare LE/GT %s and %s", breg[sreg], val));
+					if(optype(p->op) == I) {
+												op2("LD", "A", breg[sreg]);
+												op1("ADD", "#0x80");
+												op1("CP", STR("#<%d", n^0x80));
+						if(generic(p->op) == GT) {
+							int lab = genlabel(1);
+												op2("JR", "Z", STR(".L%d", lab));
+												op2("JP", "NC", jmp);
+												label(STR(".L%d:", lab));
+						} else {
+												op2("JP", "C", jmp);
+												op2("JP", "Z", jmp);
+						}
+					} else {
+												op2("LD", "A", STR("#<%s", val));
+												op1("CP", breg[sreg]);
+												op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+					}
+				} else {
+					int sreg2 = RIGHT_REG(p);
+					if(IS_RIGHT_INDIR(p)) {
+												comment(STR("Compare LE/GT %s and (mem)", breg[sreg]));
+						if(optype(p->op) == I) {
+#ifdef GAMEBOY
+												op2("LD", "A", STR("(%s)", wreg[sreg2]));
+												op1("ADD", "#0x80");
+												op2("LD", "L", "A");
+												op2("LD", "A", breg[sreg]);
+												op1("ADD", "#0x80");
+												op1("CP", "L");
+							if(generic(p->op) == GT) {
+								int lab = genlabel(1);
+												op2("JR", "Z", STR(".L%d", lab));
+												op2("JP", "NC", jmp);
+												label(STR(".L%d:", lab));
+							} else {
+												op2("JP", "C", jmp);
+												op2("JP", "Z", jmp);
+							}
+#else
+							int lab1 = genlabel(1);
+							int lab2 = genlabel(1);
+												op2("LD", "A", STR("(%s)", wreg[sreg2]));
+												op1("CP", breg[sreg]);
+												op2("JP", "PE", STR(".L%d", lab1));
+												op2("JP", (generic(p->op) == LE ? "P" : "M"), jmp);
+												op1("JR", STR(".L%d", lab2));
+												label(STR(".L%d:", lab1));
+												op2("JP", (generic(p->op) == LE ? "M" : "P"), jmp);
+#endif
+						} else {
+												op2("LD", "A", STR("(%s)", wreg[sreg2]));
+												op1("CP", breg[sreg]);
+												op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+						}
+					} else {
+												comment(STR("Compare LE/GT %s and %s", breg[sreg], breg[sreg2]));
+						if(optype(p->op) == I) {
+#ifdef GAMEBOY
+												op2("LD", "A", breg[sreg]);
+												op1("ADD", "#0x80");
+												op2("LD", "L", "A");
+												op2("LD", "A", breg[sreg2]);
+												op1("ADD", "#0x80");
+												op1("CP", "L");
+												op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+#else
+						int lab1 = genlabel(1);
+						int lab2 = genlabel(1);
+												op2("LD", "A", breg[sreg2]);
+												op1("CP", breg[sreg]);
+												op2("JP", "PE", STR(".L%d", lab1));
+												op2("JP", (generic(p->op) == LE ? "P" : "M"), jmp);
+												op1("JR", STR(".L%d", lab2));
+												label(STR(".L%d:", lab1));
+												op2("JP", (generic(p->op) == LE ? "M" : "P"), jmp);
+												label(STR(".L%d:", lab2));
+#endif
+						} else {
+												op2("LD", "A", breg[sreg2]);
+												op1("CP", breg[sreg]);
+												op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+						}
+					}
+				}
+			}
+			break;
+		}
+		case LE+I+sizeop(2):
+		case LE+U+sizeop(2):
+		case GT+I+sizeop(2):
+		case GT+U+sizeop(2): {
+			int lab = genlabel(1);
+			int sreg = LEFT_REG(p);
+			char *jmp = p->syms[0]->x.name;
+			char *src1 = wreg[sreg];
+			assert(opsize(LEFT_NODE(p)->op) == 2);
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+				int n = const_val(RIGHT_NODE(p));
+												comment(STR("Compare LE/GT %s and %s", src1, val));
+				if(optype(p->op) == I) {
+					int lab2 = genlabel(1);
+												op2("LD", "A", hreg[sreg]);
+												op1("ADD", "#0x80");
+												op1("CP", STR("#<%d", ((n>>8)&0xFF)^0x80));
+												op2("JR", "NZ", STR(".L%d", lab));
+												op2("LD", "A", lreg[sreg]);
+												op1("CP", STR("#<%d", n));
+					if(generic(p->op) == GT) {
+						int lab2 = genlabel(1);
+												op2("JR", "Z", STR(".L%d", lab2));
+												label(STR(".L%d:", lab));
+												op2("JP", "NC", jmp);
+												label(STR(".L%d:", lab2));
+					} else {
+												op2("JP", "Z", jmp);
+												label(STR(".L%d:", lab));
+												op2("JP", "C", jmp);
+					}
+				} else {
+												op2("LD", "A", STR("#<%d", (n>>8)&0xFF));
+												op1("CP", hreg[sreg]);
+												op2("JR", "NZ", STR(".L%d", lab));
+												op2("LD", "A", STR("#<%d", n));
+												op1("CP", lreg[sreg]);
+												label(STR(".L%d:", lab));
+												op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+				}
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				char *src2 = wreg[sreg2];
+				assert(opsize(RIGHT_NODE(p)->op) == 2);
+												comment(STR("Compare LE/GT %s and %s", src1, src2));
+				if(optype(p->op) == I) {
+#ifdef GAMEBOY
+												op2("LD", "A", hreg[sreg]);
+												op1("ADD", "#0x80");
+												op2("LD", "L", "A");
+												op2("LD", "A", hreg[sreg2]);
+												op1("ADD", "#0x80");
+												op1("CP", "L");
+												op2("JR", "NZ", STR(".L%d", lab));
+#else
+					int lab2 = genlabel(1);
+												op2("LD", "A", breg[sreg2]);
+												op1("CP", breg[sreg]);
+												op2("JR", "Z", STR(".L%d", lab2));
+												op2("JP", "PE", STR(".L%d", lab));
+												op2("JP", (generic(p->op) == LE ? "P" : "M"), jmp);
+												op1("JR", STR(".L%d", lab2));
+												label(STR(".L%d:", lab));
+												op2("JP", (generic(p->op) == LE ? "M" : "P"), jmp);
+												label(STR(".L%d:", lab2));
+#endif
+				} else {
+												op2("LD", "A", hreg[sreg2]);
+												op1("CP", hreg[sreg]);
+												op2("JR", "NZ", STR(".L%d", lab));
+				}
+												op2("LD", "A", lreg[sreg2]);
+												op1("CP", lreg[sreg]);
+												label(STR(".L%d:", lab));
+												op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+			}
+			break;
+		}
+		case EQ+I+sizeop(4):
+		case EQ+U+sizeop(4):
+		case EQ+F+sizeop(4):
+		case NE+I+sizeop(4):
+		case NE+U+sizeop(4):
+		case NE+F+sizeop(4):
+		case GE+I+sizeop(4):
+		case GE+U+sizeop(4):
+		case GE+F+sizeop(4):
+		case LT+I+sizeop(4):
+		case LT+U+sizeop(4):
+		case LT+F+sizeop(4):
+		case GT+I+sizeop(4):
+		case GT+U+sizeop(4):
+		case GT+F+sizeop(4):
+		case LE+I+sizeop(4):
+		case LE+U+sizeop(4):
+		case LE+F+sizeop(4): {
+			char *jmp = p->syms[0]->x.name;
+												comment("Floating point comparison");
+			save(BC);
+			save(DE);
+#ifdef GAMEBOY
+#else
+			save(HL);
+#endif
+			load_32(RIGHT_NODE(p));
+												op1("PUSH", "HL");
+												op1("PUSH", "DE");
+			argstack += 4;
+			load_32(LEFT_NODE(p));
+												op1(".globl", optype((p)->op)==F ? ".fsub32" : (optype((p)->op)==U ? ".subu32" : ".sub32"));
+												op1("CALL", optype((p)->op)==F ? ".fsub32" : (optype((p)->op)==U ? ".subu32" : ".sub32"));
+			argstack -= 4;
+												op1(".globl", optype((p)->op)==F ? ".fcmp32" : ".cmp32");
+												op1("CALL", optype((p)->op)==F ? ".fcmp32" : ".cmp32");
+			restore(DE);
+			restore(BC);
+#ifdef GAMEBOY
+#else
+			restore(HL);
+#endif
+			if(generic(p->op) == EQ) {
+												op2("JP", "Z", jmp);
+			} else if(generic(p->op) == NE) {
+												op2("JP", "NZ", jmp);
+			} else if(generic(p->op) == GE) {
+												op2("JP", "NC", jmp);
+			} else if(generic(p->op) == LT) {
+												op2("JP", "C", jmp);
+			} else if(generic(p->op) == GT) {
+				int lab = genlabel(1);
+												op2("JR", "C", STR(".L%d", lab));
+												op2("JP", "NZ", jmp);
+												label(STR(".L%d:", lab));
+			} else if(generic(p->op) == LE) {
+												op2("JP", "C", jmp);
+												op2("JP", "Z", jmp);
+			}
+			break;
+		}
+		case LSH+I+sizeop(1):
+		case LSH+U+sizeop(1):
+		case RSH+I+sizeop(1):
+		case RSH+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg = LEFT_REG(p);
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+				int n = const_val(RIGHT_NODE(p));
+												comment(STR("Left/right shift %s by %s into %s", breg[sreg], val, breg[dreg]));
+												op2("LD", breg[dreg], breg[sreg]);
+				while(n-- > 0) {
+					if(generic(p->op) == LSH) {
+												op1("SLA", breg[dreg]);
+					} else if(generic(p->op) == RSH) {
+												op1(optype((p)->op)==U ? "SRL" : "SRA", breg[dreg]);
+					}
+				}
+			} else {
+				int shift = RIGHT_REG(p);
+												comment(STR("Left/right shift %s by %s into %s", breg[sreg], breg[shift], breg[dreg]));
+												op2("LD", "A", breg[shift]);
+				if(generic(p->op) == LSH) {
+												op1(".globl", ".asl8");
+												op1("CALL", ".asl8");
+				} else if(generic(p->op) == RSH) {
+												op1(".globl", optype((p)->op)==U ? ".lsr8" : ".asr8");
+												op1("CALL", optype((p)->op)==U ? ".lsr8" : ".asr8");
+				}
+			}
+			break;
+		}
+		case LSH+I+sizeop(2):
+		case LSH+U+sizeop(2):
+		case RSH+I+sizeop(2):
+		case RSH+U+sizeop(2): {
+			int dreg = REG(p);
+			int sreg = LEFT_REG(p);
+			assert(opsize(LEFT_NODE(p)->op) == 2);
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+				int n = const_val(RIGHT_NODE(p));
+												comment(STR("Left/right shift %s by %s into %s", wreg[sreg], val, wreg[dreg]));
+				if(n == 8) {
+					if(generic(p->op) == LSH) {
+												op2("LD", "A", lreg[sreg]);
+												op2("LD", hreg[dreg], "A");
+												op1("XOR", "A");
+												op2("LD", lreg[dreg], "A");
+					} else if(generic(p->op) == RSH) {
+												op2("LD", "A", hreg[sreg]);
+												op2("LD", lreg[dreg], "A");
+						if(optype((p)->op)==U) {
+												op1("XOR", "A");
+												op2("LD", hreg[dreg], "A");
+						} else {
+							int lab = genlabel(1);
+												op1("AND", "#0x80");
+												op2("JR", "Z", STR(".L%d", lab));
+												op2("LD", "A", "#0xFF");
+												label(STR(".L%d:", lab));
+												op2("LD", hreg[dreg], "A");
+						}
+					}
+				} else {
+												op2("LD", hreg[dreg], hreg[sreg]);
+												op2("LD", lreg[dreg], lreg[sreg]);
+					while(n-- > 0) {
+						if(generic(p->op) == LSH) {
+							if(dreg == HL) {
+												op2("ADD", "HL", "HL");
+							} else {
+												op1("SLA", lreg[dreg]);
+												op1("RL", hreg[dreg]);
+							}
+						} else if(generic(p->op) == RSH) {
+												op1(optype((p)->op)==U ? "SRL" : "SRA", hreg[dreg]);
+												op1("RR", lreg[dreg]);
+						}
+					}
+				}
+			} else {
+				int shift = RIGHT_REG(p);
+												comment(STR("Left/right shift %s by %s into %s", wreg[sreg], breg[shift], wreg[dreg]));
+												op2("LD", "A", breg[shift]);
+				if(generic(p->op) == LSH) {
+												op1(".globl", ".asl16");
+												op1("CALL", ".asl16");
+				} else if(generic(p->op) == RSH) {
+												op1(".globl", optype((p)->op)==U ? ".lsr16" : ".asr16");
+												op1("CALL", optype((p)->op)==U ? ".lsr16" : ".asr16");
+				}
+			}
+			break;
+		}
+		case LSH+I+sizeop(4):
+		case LSH+U+sizeop(4):
+		case RSH+I+sizeop(4):
+		case RSH+U+sizeop(4): {
+												comment("Long left/right shift");
+			save(BC);
+			save(DE);
+#ifdef GAMEBOY
+#else
+			save(HL);
+#endif
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+				load_32(LEFT_NODE(p));
+												op2("LD", "A", STR("#<%d", val));
+			} else {
+				int shift = RIGHT_REG(p);
+												op2("LD", "C", breg[shift]);
+				load_32(LEFT_NODE(p));
+												op2("LD", "A", "C");
+			}
+			if(generic(p->op) == LSH) {
+												op1(".globl", ".asl32");
+												op1("CALL", ".asl32");
+			} else if(generic(p->op) == RSH) {
+												op1(".globl", optype((p)->op)==U ? ".lsr32" : ".asr32");
+												op1("CALL", optype((p)->op)==U ? ".lsr32" : ".asr32");
+			}
+			store_32(p);
+#ifdef GAMEBOY
+#else
+			restore(HL);
+#endif
+			restore(DE);
+			restore(BC);
+			break;
+		}
+		case MUL+I+sizeop(1):
+		case MUL+U+sizeop(1):
+		case DIV+I+sizeop(1):
+		case DIV+U+sizeop(1):
+		case MOD+I+sizeop(1):
+		case MOD+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_REG(p);
+			int sreg2 = RIGHT_REG(p);
+												comment(STR("Mul/div/mod %s by %s into %s", breg[sreg1], breg[sreg2], breg[dreg]));
+			if(generic(p->op) == MUL) {
+												op1(".globl", optype((p)->op)==U ? ".mulu8" : ".mul8");
+												op1("CALL", optype((p)->op)==U ? ".mulu8" : ".mul8");
+			} else if(generic(p->op) == DIV) {
+												op1(".globl", optype((p)->op)==U ? ".divu8" : ".div8");
+												op1("CALL", optype((p)->op)==U ? ".divu8" : ".div8");
+			} else {
+												op1(".globl", optype((p)->op)==U ? ".modu8" : ".mod8");
+												op1("CALL", optype((p)->op)==U ? ".modu8" : ".mod8");
+			}
+			break;
+		}
+		case MUL+I+sizeop(2):
+		case MUL+U+sizeop(2):
+		case DIV+I+sizeop(2):
+		case DIV+U+sizeop(2):
+		case MOD+I+sizeop(2):
+		case MOD+U+sizeop(2): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_REG(p);
+			int sreg2 = RIGHT_REG(p);
+			assert(opsize(LEFT_NODE(p)->op) == 2);
+			assert(opsize(RIGHT_NODE(p)->op) == 2);
+												comment(STR("Mul/div/mod %s by %s into %s", wreg[sreg1], wreg[sreg2], wreg[dreg]));
+			if(generic(p->op) == MUL) {
+												op1(".globl", optype((p)->op)==U ? ".mulu16" : ".mul16");
+												op1("CALL", optype((p)->op)==U ? ".mulu16" : ".mul16");
+			} else if(generic(p->op) == DIV) {
+												op1(".globl", optype((p)->op)==U ? ".divu16" : ".div16");
+												op1("CALL", optype((p)->op)==U ? ".divu16" : ".div16");
+			} else {
+												op1(".globl", optype((p)->op)==U ? ".modu16" : ".mod16");
+												op1("CALL", optype((p)->op)==U ? ".modu16" : ".mod16");
+			}
+			break;
+		}
+		case ADD+I+sizeop(4):
+		case ADD+U+sizeop(4):
+		case ADD+F+sizeop(4):
+		case SUB+I+sizeop(4):
+		case SUB+U+sizeop(4):
+		case SUB+F+sizeop(4):
+		case MUL+I+sizeop(4):
+		case MUL+U+sizeop(4):
+		case MUL+F+sizeop(4):
+		case DIV+I+sizeop(4):
+		case DIV+U+sizeop(4):
+		case DIV+F+sizeop(4):
+		case MOD+I+sizeop(4):
+		case MOD+U+sizeop(4):
+		case BAND+I+sizeop(4):
+		case BAND+U+sizeop(4):
+		case BOR+I+sizeop(4):
+		case BOR+U+sizeop(4):
+		case BXOR+I+sizeop(4):
+		case BXOR+U+sizeop(4): {
+												comment("Long/floating point add/sub/mul/div/mod/and/or/xor");
+			save(BC);
+			save(DE);
+#ifdef GAMEBOY
+#else
+			save(HL);
+#endif
+			load_32(RIGHT_NODE(p));
+												op1("PUSH", "HL");
+												op1("PUSH", "DE");
+			argstack += 4;
+			load_32(LEFT_NODE(p));
+			if(generic(p->op) == ADD) {
+												op1(".globl", optype((p)->op)==F ? ".fadd32" : (optype((p)->op)==U ? ".addu32" : ".add32"));
+												op1("CALL", optype((p)->op)==F ? ".fadd32" : (optype((p)->op)==U ? ".addu32" : ".add32"));
+			} else if(generic(p->op) == SUB) {
+												op1(".globl", optype((p)->op)==F ? ".fsub32" : (optype((p)->op)==U ? ".subu32" : ".sub32"));
+												op1("CALL", optype((p)->op)==F ? ".fsub32" : (optype((p)->op)==U ? ".subu32" : ".sub32"));
+			} else if(generic(p->op) == MUL) {
+												op1(".globl", optype((p)->op)==F ? ".fmul32" : (optype((p)->op)==U ? ".mulu32" : ".mul32"));
+												op1("CALL", optype((p)->op)==F ? ".fmul32" : (optype((p)->op)==U ? ".mulu32" : ".mul32"));
+			} else if(generic(p->op) == DIV) {
+												op1(".globl", optype((p)->op)==F ? ".fdiv32" : (optype((p)->op)==U ? ".divu32" : ".div32"));
+												op1("CALL", optype((p)->op)==F ? ".fdiv32" : (optype((p)->op)==U ? ".divu32" : ".div32"));
+			} else if(generic(p->op) == MOD) {
+												op1(".globl", optype((p)->op)==U ? ".modu32" : ".mod32");
+												op1("CALL", optype((p)->op)==U ? ".modu32" : ".mod32");
+			} else if(generic(p->op) == BAND) {
+												op1(".globl", ".and32");
+												op1("CALL", ".and32");
+			} else if(generic(p->op) == BOR) {
+												op1(".globl", ".or32");
+												op1("CALL", ".or32");
+			} else if(generic(p->op) == BXOR) {
+												op1(".globl", ".xor32");
+												op1("CALL", ".xor32");
+			}
+			argstack -= 4;
+			store_32(p);
+#ifdef GAMEBOY
+#else
+			restore(HL);
+#endif
+			restore(DE);
+			restore(BC);
+			break;
+		}
+		case RET+I+sizeop(1):
+		case RET+U+sizeop(1):
+		case RET+I+sizeop(2):
+		case RET+U+sizeop(2):
+		case RET+P+sizeop(2):
+		case RET+I+sizeop(4):
+		case RET+U+sizeop(4):
+		case RET+F+sizeop(4):
+		case RET+V: {
+			break;
+		}
+		case LABEL+V: {
+												label(STR("%s:", p->syms[0]->x.name));
+			break;
+		}
+		case JUMP+V: {
+			if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+				char *val = LEFT_VAL(p);
+												op1("JP", val);
+			} else {
+				int sreg = LEFT_REG(p);
+				char *src = wreg[sreg];
+												op1("JP", STR("(%s)", src));
+			}
+			break;
+		}
+		default: {
+			fprintf(stderr, "ERROR: unimplemented instruction %s\n", opname(p->op));
+			break;
+		}
+	}
+}
+
+static void offsetsp(int off)
+{
+#ifdef GAMEBOY
+	while(off < -0x80) {
+												op2("LDA", "SP", "-128(SP)");
+		off += 0x80;
+	}
+	while(off > 0x7F) {
+												op2("LDA", "SP", "127(SP)");
+		off -= 0x7F;
+	}
+	if(off == 1) {
+												op1("INC", "SP");
+	} else if(off == -1) {
+												op1("DEC", "SP");
+	} else if(off != 0) {
+												op2("LDA", "SP", STR("%d(SP)", off));
+	}
+#else
+	if(off > 0 && off <= 5) {
+		while(off--) {
+												op1("INC", "SP");
+		}
+	} else if(off < 0 && off >= -5) {
+		while(off++) {
+												op1("DEC", "SP");
+		}
+	} else if(off != 0) {
+		int treg = tmp16(HL) ? HL : IY;
+												op2("LD", wreg[treg], STR("#%d", off));
+												op2("ADD", wreg[treg], "SP");
+												op2("LD", "SP", wreg[treg]);
+	}
+#endif
+}
+
+#ifdef GAMEBOY
+static void offsethl(int off)
+{
+	if(off >= -0x80 && off <= 0x7F) {
+												op2("LDA", "HL", STR("%d(SP)", off));
+	} else {
+												op2("LDA", "HL", "0(SP)");
+		save(BC);
+												op2("LD", "BC", STR("#%d", off));
+												op2("ADD", "HL", "BC");
+		restore(BC);
+	}
+}
+#endif
+
+static int save(int reg)
+{
+	if((freemask[IREG]&reg16[reg]->x.regnode->mask) != reg16[reg]->x.regnode->mask) {
+												op1("PUSH", wreg[reg]);
+		argstack += 2;
+		return 2;
+	}
+	return 0;
+}
+
+static int restore(int reg)
+{
+	if((freemask[IREG]&reg16[reg]->x.regnode->mask) != reg16[reg]->x.regnode->mask) {
+												op1("POP", wreg[reg]);
+		argstack -= 2;
+		return 2;
+	}
+	return 0;
+}
+
+static void load_32(Node p)
+{
+#ifdef GAMEBOY
+	if(IS_INDIR(p)) {
+		if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+			int off = const_val(LEFT_NODE(p));
+												offsethl(off + framesize + argstack);
+		} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+												op2("LD", "HL", STR("#%s", LEFT_VAL(p)));
+		} else {
+			int sreg = LEFT_REG(p);
+												op2("LD", "H", hreg[sreg]);
+												op2("LD", "L", lreg[sreg]);
+		}
+	} else
+												op2("LD", "HL", STR("#%s", xreg[REG(p)]));
+
+												op2("LD", "E", "(HL)");
+												op1("INC", "HL");
+												op2("LD", "D", "(HL)");
+												op1("INC", "HL");
+												op2("LD", "A", "(HL+)");
+												op2("LD", "H", "(HL)");
+												op2("LD", "L", "A");
+#else
+	char *src = NULL;
+	if(IS_INDIR(p)) {
+		if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+			int off = const_val(LEFT_NODE(p));
+												op2("LD", "H", STR("%d(IX)", off+3));
+												op2("LD", "L", STR("%d(IX)", off+2));
+												op2("LD", "D", STR("%d(IX)", off+1));
+												op2("LD", "E", STR("%d(IX)", off));
+		} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+			src = LEFT_VAL(p);
+		} else {
+			int sreg = LEFT_REG(p);
+			if(sreg != IY) {
+												op1("PUSH", wreg[sreg]);
+												op1("POP", "IY");
+			}
+												op2("LD", "H", "3(IY)");
+												op2("LD", "L", "2(IY)");
+												op2("LD", "D", "1(IY)");
+												op2("LD", "E", "0(IY)");
+		}
+	} else {
+		src = xreg[REG(p)];
+	}
+	if(src) {
+												op2("LD", "HL", STR("(%s+2)", src));
+												op2("LD", "DE", STR("(%s)", src));
+	}
+#endif
+}
+
+static void store_32(Node p)
+{
+#ifdef GAMEBOY
+	char *dst = NULL;
+	if(IS_ADDRFP(p) || IS_ADDRLP(p)) {
+		int off = const_val(p);
+												op1("PUSH", "HL");
+												offsethl(off + framesize + argstack + 2);
+												op2("LD", "(HL)", "E");
+												op1("INC", "HL");
+												op2("LD", "(HL)", "D");
+												op1("INC", "HL");
+												op1("POP", "DE");
+												op2("LD", "(HL)", "E");
+												op1("INC", "HL");
+												op2("LD", "(HL)", "D");
+	} else if(IS_CONST(p) || IS_ADDRGP(p)) {
+		dst = VAL(p);
+	} else if(IS_INDIR(p)) {
+		int sreg = LEFT_REG(p);
+												op1("PUSH", "HL");
+												op2("LD", "H", hreg[sreg]);
+												op2("LD", "L", lreg[sreg]);
+												op2("LD", "(HL)", "E");
+												op1("INC", "HL");
+												op2("LD", "(HL)", "D");
+												op1("INC", "HL");
+												op1("POP", "DE");
+												op2("LD", "(HL)", "E");
+												op1("INC", "HL");
+												op2("LD", "(HL)", "D");
+
+	} else {
+		dst = xreg[REG(p)];
+	}
+	if(dst) {
+												op2("LD", "A", "H");
+												op2("LD", STR("(#%s+3)", dst), "A");
+												op2("LD", "A", "L");
+												op2("LD", STR("(#%s+2)", dst), "A");
+												op2("LD", "A", "D");
+												op2("LD", STR("(#%s+1)", dst), "A");
+												op2("LD", "A", "E");
+												op2("LD", STR("(#%s)", dst), "A");
+	}
+#else
+	char *dst = NULL;
+	if(IS_ADDRFP(p) || IS_ADDRLP(p)) {
+		int off = const_val(p);
+												op2("LD", STR("%d(IX)", off+3), "H");
+												op2("LD", STR("%d(IX)", off+2), "L");
+												op2("LD", STR("%d(IX)", off+1), "D");
+												op2("LD", STR("%d(IX)", off), "E");
+	} else if(IS_CONST(p) || IS_ADDRGP(p)) {
+		dst = VAL(p);
+	} else if(IS_INDIR(p)) {
+		int sreg = LEFT_REG(p);
+		if(sreg != IY) {
+												op1("PUSH", wreg[sreg]);
+												op1("POP", "IY");
+		}
+												op2("LD", "3(IY)", "H");
+												op2("LD", "2(IY)", "L");
+												op2("LD", "1(IY)", "D");
+												op2("LD", "0(IY)", "E");
+	} else {
+		dst = xreg[REG(p)];
+	}
+	if(dst) {
+												op2("LD", STR("(%s+2)", dst), "HL");
+												op2("LD", STR("(%s)", dst), "DE");
+	}
+#endif
+}
+
+int const_val(Node p)
+{
+	if(generic(p->op) == ADDRF || generic(p->op) == ADDRL) {
+		assert(p->syms[0] != NULL);
+		return p->syms[0]->x.offset;
+	}
+	if(generic(p->op) == CNST) {
+		assert(p->syms[0] != NULL);
+		if(optype(p->op) == I)
+			return p->syms[0]->u.c.v.i;
+		else if(optype(p->op) == U || optype(p->op) == P)
+			return p->syms[0]->u.c.v.u;
+	}
+	if(generic(p->op) == CALL) {
+		assert(p->syms[0] != NULL);
+		return p->syms[0]->u.c.v.i;
+	}
+	if(generic(p->op) == INDIR) {
+		assert(p->syms[RX]->u.t.cse->syms[0] != NULL);
+		if(optype(p->op) == I)
+			return p->syms[RX]->u.t.cse->syms[0]->u.c.v.i;
+		else if(optype(p->op) == U || optype(p->op) == P)
+			return p->syms[RX]->u.t.cse->syms[0]->u.c.v.u;
+	}
+	assert(0);
+	return 0;
+}
+
+static int tmp8(int reg)
+{
+	if((freereg&reg8[reg]->x.regnode->mask) == reg8[reg]->x.regnode->mask) {
+		return 1;
+	}
+	return 0;
+}
+
+static int tmp16(int reg)
+{
+	if((freereg&reg16[reg]->x.regnode->mask) == reg16[reg]->x.regnode->mask) {
+		return 1;
+	}
+	return 0;
+}
+
+static int ckstack(Node p, int n) {
+	int i;
+
+	for(i = 0; i < NELEMS(p->x.kids) && p->x.kids[i]; i++)
+		if(opsize(p->x.kids[i]->op) == 4)
+			n--;
+	if(opsize(p->op) == 4 && p->count > 0)
+		n++;
+	if(n > 8)
+		error("expression too complicated\n");
+	debug(fprint(stderr, "(ckstack(%x)=%d)\n", p, n));
+	assert(n >= 0);
+	return n;
+}
+
+#ifdef GAMEBOY
+#else
+static Symbol argreg(Symbol f, int op, int prev, int argno) {
+	if(variadic(f->type) || optype(op) == B)
+		return NULL;
+	if(argno == 0) {
+		if(opsize(op) == 1)
+			return reg8[_E];
+		else if(opsize(op) == 2)
+			return reg16[DE];
+		else if(opsize(op) == 4)
+			return reg32[0];
+	} else if(argno == 1 && optype(prev) != B && opsize(prev) <= 2) {
+		if(opsize(op) == 1)
+			return reg8[_C];
+		else if(opsize(op) == 2)
+			return reg16[BC];
+	}
+	return NULL;
+}
+#endif
+
+static void doarg(Node p) {
+	static int argno;
+
+	assert(p && p->syms[0]);
+
+	if(argoffset == 0)
+		argno = 0;
+	p->x.argno = argno++;
+	p->syms[RX] = intconst(mkactual(1, p->syms[0]->u.c.v.i));
+}
+
+static void blkfetch(int k, int off, int reg, int tmp) {}
+
+static void blkstore(int k, int off, int reg, int tmp) {}
+
+static void blkloop(int dreg, int doff, int sreg, int soff, int size, int tmps[]) {}
+
+static void local(Symbol p) {
+	if(p->type->size == 4)
+		p->sclass = AUTO;
+	if(askregvar(p, rmap(ttob(p->type))) == 0)
+		mkauto(p);
+}
+
+static void function(Symbol f, Symbol caller[], Symbol callee[], int ncalls) {
+	int i;
+	unsigned um;
+#ifdef GAMEBOY
+#else
+	unsigned argmask = 0;
+	Symbol r, argregs[2];
+#endif
+
+	usedmask[IREG] = usedmask[FREG] = 0;
+	freemask[IREG] = freemask[FREG] = ~(unsigned)0;
+	offset = 2;
+	/* offset = return address */
+
+	for(i = 0; callee[i]; i++) {
+		Symbol p = callee[i];
+		Symbol q = caller[i];
+		assert(q);
+
+#ifdef GAMEBOY
+		p->x.offset = q->x.offset = offset;
+		p->x.name = q->x.name = stringd(offset);
+		p->sclass = q->sclass = AUTO;
+#else
+		p->x.offset = q->x.offset = offset;
+		p->x.name = q->x.name = stringd(offset);
+		p->sclass = q->sclass = AUTO;
+		r = argreg(f, ttob(q->type), i ? ttob(caller[i-1]->type): 0, i);
+		if(i < 2)
+			argregs[i] = r;
+		if(!r) {
+			p->sclass = AUTO;
+		} else if(r && ncalls == 0 && !isstruct(q->type) && !p->addressed &&
+			q->type->size <= 2) {
+			p->sclass = q->sclass = REGISTER;
+			askregvar(p, r);
+			assert(p->x.regnode && p->x.regnode->vbl == p);
+			q->x = p->x;
+			q->type = p->type;
+		}
+		if(r && q->type->size <= 2) {
+			argmask |= r->x.regnode->mask;
+		} else if(r && q->type->size == 4) {
+			argmask |= reg16[BC]->x.regnode->mask | reg16[DE]->x.regnode->mask;
+		}
+		if(!isstruct(freturn(f->type)) && freturn(f->type)->size > 2) {
+			argmask |= reg16[BC]->x.regnode->mask;
+		}
+#endif
+		offset += q->type->size;
+	}
+	offset = maxoffset = 0;
+	gencode(caller, callee);
+												label(STR("_start%s:", f->x.name));
+												label(STR("%s:", f->x.name));
+	if(usedmask[FREG] & 0x01)
+												op1(".globl", ".lreg0");
+	if(usedmask[FREG] & 0x02)
+												op1(".globl", ".lreg1");
+	if(usedmask[FREG] & 0x04)
+												op1(".globl", ".lreg2");
+	if(usedmask[FREG] & 0x08)
+												op1(".globl", ".lreg3");
+	if(usedmask[FREG] & 0x10)
+												op1(".globl", ".lreg4");
+	if(usedmask[FREG] & 0x20)
+												op1(".globl", ".lreg5");
+	if(usedmask[FREG] & 0x40)
+												op1(".globl", ".lreg6");
+	if(usedmask[FREG] & 0x80)
+												op1(".globl", ".lreg7");
+	um = usedmask[IREG];
+#ifdef GAMEBOY
+	if((um & reg16[BC]->x.regnode->mask) && strcmp(f->x.name, "_main")) {
+		argstack += 2;
+												op1("PUSH", "BC");
+	}
+#else
+	if((argmask & reg16[BC]->x.regnode->mask) == 0 &&
+		(um & reg16[BC]->x.regnode->mask) && strcmp(f->x.name, "_main")) {
+		argstack += 2;
+												op1("PUSH", "BC");
+	}
+	if((argmask & reg16[DE]->x.regnode->mask) == 0 &&
+		(um & reg16[DE]->x.regnode->mask) && strcmp(f->x.name, "_main")) {
+		argstack += 2;
+												op1("PUSH", "DE");
+	}
+#endif
+	framesize = maxoffset;
+#ifdef GAMEBOY
+	if(framesize > 0)
+		offsetsp(-framesize);
+#else
+												op1("CALL", ".c_entry");
+												op1(".dw", STR("%d", framesize));
+	for(i = 0; i < 2 && callee[i]; i++) {
+		r = argregs[i];
+		if(r && r->x.regnode != callee[i]->x.regnode) {
+			Symbol out = callee[i];
+			Symbol in  = caller[i];
+			int sreg, off;
+
+			assert(out && in && r->x.regnode);
+			assert(out->sclass != REGISTER || out->x.regnode);
+
+			sreg = r->x.regnode->number;
+			off = in->x.offset + framesize;
+			if(in->type->size == 1) {
+												op2("LD", STR("%d(IX)", off), breg[sreg]);
+			} else if(in->type->size == 2) {
+												op2("LD", STR("%d(IX)", off), lreg[sreg]);
+					off++;
+												op2("LD", STR("%d(IX)", off), hreg[sreg]);
+			} else if(in->type->size == 4) {
+												op2("LD", STR("%d(IX)", off), "E");
+					off++;
+												op2("LD", STR("%d(IX)", off), "D");
+					off++;
+												op2("LD", STR("%d(IX)", off), "C");
+					off++;
+												op2("LD", STR("%d(IX)", off), "B");
+			}
+		}
+	}
+#endif
+	emitcode();
+#ifdef GAMEBOY
+	if(framesize > 0)
+		offsetsp(framesize);
+	if((um & reg16[BC]->x.regnode->mask) && strcmp(f->x.name, "_main")) {
+		argstack -= 2;
+												op1("POP", "BC");
+	}
+#else
+	if((argmask & reg16[DE]->x.regnode->mask) == 0 &&
+		(um & reg16[DE]->x.regnode->mask) && strcmp(f->x.name, "_main")) {
+		argstack -= 2;
+												op1("POP", "DE");
+	}
+	if((argmask & reg16[BC]->x.regnode->mask) == 0 &&
+		(um & reg16[BC]->x.regnode->mask) && strcmp(f->x.name, "_main")) {
+		argstack -= 2;
+												op1("POP", "BC");
+	}
+#endif
+#ifdef GAMEBOY
+												op0("RET");
+#else
+												op1("JP", ".c_exit");
+#endif
+												label(STR("_end%s:", f->x.name));
+	generate();
+}
+
+static void defsymbol(Symbol p) {
+	if(p->scope >= LOCAL && p->sclass == STATIC)
+		p->x.name = stringf(".L%d", genlabel(1));
+	else if(p->generated)
+		p->x.name = stringf(".L%s", p->name);
+	else if(p->scope == GLOBAL || p->sclass == EXTERN)
+		p->x.name = stringf("_%s", p->name);
+	else
+		p->x.name = p->name;
+}
+
+static void address(Symbol q, Symbol p, long n) {
+	if(p->scope == GLOBAL || p->sclass == STATIC || p->sclass == EXTERN)
+		q->x.name = stringf("%s%s%D", p->x.name, n >= 0 ? "+" : "", n);
+	else {
+		assert(n <= INT_MAX && n >= INT_MIN);
+		q->x.offset = p->x.offset + n;
+		q->x.name = stringd(q->x.offset);
+	}
+}
+
+#define MAXFLOAT 0x7FFFFFFFUL
+#define MINFLOAT 0x00800000UL
+#define NEGFLOAT 0x80000000UL
+#define ZEROFLOAT 0x00000000UL
+
+static void defconst(int suffix, int size, Value v) {
+	if(suffix == I && size == 1)
+												op1(".db", STR("%d", v.i));
+	else if(suffix == I && size == 2)
+												op1(".dw", STR("%d", v.i));
+	else if(suffix == I && size == 4)
+												op1(".dw", STR("0x%x,0x%x", v.i&0xFFFF, (v.i>>16)&0xFFFF));
+	else if(suffix == U && size == 1)
+												op1(".db", STR("0x%x", v.u));
+	else if(suffix == U && size == 2)
+												op1(".dw", STR("0x%x", v.u));
+	else if(suffix == U && size == 4)
+												op1(".dw", STR("0x%x,0x%x", v.u&0xFFFF, (v.u>>16)&0xFFFF));
+	else if(suffix == P && size == 2)
+												op1(".dw", STR("0x%x", v.p));
+	else if(suffix == F && size == 4) {
+		double d, f;
+		unsigned long u, i;
+		unsigned int exp;
+
+		d = v.d;
+		u = 0;
+		exp = 64+1;
+
+		if(d == 0.0) {
+			/* ZERO */
+			u = ZEROFLOAT;
+			goto output;
+		}
+		if(d < 0.0) {
+			u |= NEGFLOAT;
+			d = -d;
+		}
+		while(d >= 2.0) {
+			d /= 2.0;
+			if(exp == 127) {
+				/* MAX */
+				fprintf(stderr, "WARNING: overflow in floating point constant %e\n", (float)v.d);
+				fprintf(stderr, "MAXFLOAT will be used\n");
+				u |= MAXFLOAT;
+				goto output;
+			}
+			exp++;
+		}
+		while(d < 1.0) {
+			d *= 2.0;
+			if(exp == 0) {
+				/* MIN */
+				fprintf(stderr, "WARNING: underflow in floating point constant %e\n", (float)v.d);
+				fprintf(stderr, "MINFLOAT will be used\n");
+				u |= MINFLOAT;
+				goto output;
+			}
+			exp--;
+		}
+		u |= ((exp&0x07F)<<24);
+		f = 1.0;
+		for(i = 0x00800000UL; i > 0; i >>= 1) {
+			if(d >= f) {
+				u |= i;
+				d -= f;
+			}
+			f /= 2.0;
+		}
+output:
+												comment(STR("Float/double %e", (float)v.d));
+												op1(".db", STR("0x%x", u&0xFF));
+												op1(".db", STR("0x%x", (u>>8)&0xFF));
+												op1(".db", STR("0x%x", (u>>16)&0xFF));
+												op1(".db", STR("0x%x", (u>>24)&0xFF));
+	} else assert(0);
+}
+
+static void defaddress(Symbol p) {
+												op1(".dw", p->x.name);
+}
+
+static void defstring(int n, char *str) {
+	char *s;
+	for(s = str; s < str + n; s++)
+												op1(".db", STR("%d", (*s)&0377));
+}
+
+static void export(Symbol p) {
+#ifdef GAMEBOY
+	if(!HARDWARE_REG(p->x.name))
+#endif
+												op1(".globl", p->x.name);
+}
+
+static void import(Symbol p) {
+	if(p->ref > 0)
+#ifdef GAMEBOY
+		if(!HARDWARE_REG(p->x.name))
+#endif
+												op1(".globl", p->x.name);
+}
+
+static void global(Symbol p) {
+												label(STR("%s:", p->x.name));
+	if(p->u.seg == BSS)
+												op1(".blkb", STR("%d", p->type->size));
+}
+
+static void space(int n) {
+	if(cseg != BSS)
+												op1(".blkb", STR("%d", n));
+}
+
+static void stabinit(char *file, int argc, char *argv[]) {
+	if(file) {
+		currentfile = file;
+												comment(STR("File %s", currentfile));
+		srcfp = fopen(currentfile, "r");
+		srcpos = 0;
+		currentline = 0;
+	}
+}
+
+static void stabline(Coordinate *cp) {
+	if(cp->file && cp->file != currentfile) {
+		currentfile = cp->file;
+												comment(STR("File %s", currentfile));
+		if(srcfp)
+			fclose(srcfp);
+		currentfile = cp->file;
+		srcfp = fopen(currentfile, "r");
+		srcpos = 0;
+		currentline = 0;
+	}
+	if(currentline != cp->y && srcfp) {
+		char buf[512];
+		if(srcpos > cp->y) {
+			rewind(srcfp);
+			srcpos = 0;
+		}
+		for(; srcpos < cp->y; srcpos++)
+			if(fgets(buf, sizeof buf, srcfp) == NULL) {
+				fclose(srcfp);
+				srcfp = NULL;
+				break;
+			}
+		if(srcfp && srcpos == cp->y) {
+			char *c = strchr(buf, '\n');
+			if(c)
+				*c = '\0';
+												comment(STR("%04d: %s", cp->y, buf));
+		}
+	}
+	currentline = cp->y;
+}
+
+static void stabend(Coordinate *cp, Symbol p, Coordinate **cpp, Symbol *sp, Symbol *stab) {
+	if(srcfp)
+		fclose(srcfp);
+}
+
+#ifdef GAMEBOY
+Interface z80gbIR8 = {
+#else
+Interface z80IR8 = {
+#endif
+	1, 1, 0,  /* char */
+	1, 1, 0,  /* short */
+	1, 1, 0,  /* int */
+	2, 1, 1,  /* long */
+	4, 1, 1,  /* long long */
+	4, 1, 1,  /* float */
+	4, 1, 1,  /* double */
+	4, 1, 1,  /* long double */
+	2, 1, 0,  /* T* */
+	0, 1, 0,  /* struct */
+	1,		  /* little_endian */
+	0,		  /* mulops_calls: mul/div/mod are library routines */
+	0,		  /* wants_callb */
+	1,		  /* wants_argb */
+	0,		  /* left_to_right */
+	0,		  /* wants_dag */
+	0,		  /* unsigned_char */
+	address,
+	blockbeg,
+	blockend,
+	defaddress,
+	defconst,
+	defstring,
+	defsymbol,
+	emit,
+	export,
+	function,
+	gen,
+	global,
+	import,
+	local,
+	progbeg,
+	progend,
+	segment,
+	space,
+	NULL, stabend, NULL, stabinit, stabline, NULL, NULL,
+	{
+		2,		/* max_unaligned_load */
+		rmap,
+		blkfetch,
+		blkstore,
+		blkloop,
+		_label,
+		_rule,
+		_nts,
+		_kids,
+		_string,
+		_templates,
+		_isinstruction,
+		_ntname,
+		emit2,
+		doarg,
+		target,
+		clobber
+	}
+};
+
+#ifdef GAMEBOY
+Interface z80gbIR16 = {
+#else
+Interface z80IR16 = {
+#endif
+	1, 1, 0,  /* char */
+	1, 1, 0,  /* short */
+	2, 1, 0,  /* int */
+	4, 1, 1,  /* long */
+	4, 1, 1,  /* long long */
+	4, 1, 1,  /* float */
+	4, 1, 1,  /* double */
+	4, 1, 1,  /* long double */
+	2, 1, 0,  /* T* */
+	0, 1, 0,  /* struct */
+	1,		  /* little_endian */
+	0,		  /* mulops_calls: mul/div/mod are library routines */
+	0,		  /* wants_callb */
+	1,		  /* wants_argb */
+	0,		  /* left_to_right */
+	0,		  /* wants_dag */
+	0,		  /* unsigned_char */
+	address,
+	blockbeg,
+	blockend,
+	defaddress,
+	defconst,
+	defstring,
+	defsymbol,
+	emit,
+	export,
+	function,
+	gen,
+	global,
+	import,
+	local,
+	progbeg,
+	progend,
+	segment,
+	space,
+	NULL, stabend, NULL, stabinit, stabline, NULL, NULL,
+	{
+		2,		/* max_unaligned_load */
+		rmap,
+		blkfetch,
+		blkstore,
+		blkloop,
+		_label,
+		_rule,
+		_nts,
+		_kids,
+		_string,
+		_templates,
+		_isinstruction,
+		_ntname,
+		emit2,
+		doarg,
+		target,
+		clobber
+	}
+};

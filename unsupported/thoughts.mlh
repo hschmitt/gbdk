@@ -1,0 +1,24 @@
+Hmmm.
+Design of a installable font mechanism
+
+Basic idea:  256 tiles, but only 26 letters in the alphabet = lots of fonts
+
+Need a method for a font to tell the system how many tiles it needs.
+Idea:  	BDF type font encoding
+       	256 byte index that gives offset into binary of the image for that
+       	character.
+Gives 256 byte overhead, but could use one byte at the start to give a type
+	0: 256 byte
+	1: 128 byte (lower half only)
+	2: 64 byte  (space onwards??)
+
+	Use lower two bits for encoding size
+	Reserve other bits
+Makes font struct ugly as you dont know how big the encoding may be
+Use some typecasting instead of pointers as it's faster :)
+
+Offset
+	0	Font type (256/128...)
+	1	Tiles required
+		encoding
+		Tile data

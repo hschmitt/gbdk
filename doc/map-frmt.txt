@@ -1,0 +1,70 @@
+From version 2.0b13 the linker map file format has changed.  The
+changes were made by Michael Hope to make it more machine readable
+so that it could be easially imported into a debugger to give
+very elementry source level debugging.
+
+File format
+-----------
+All data is heirachical with the children of a node being indented
+from the parent by one tab stop.  This was done to allow a debugger
+to easially ignore sections that it didnt recognise.  The top
+level nodes currently defined are:
+
+AREA	 
+	contains area information for a code segment including
+	its base, size and the values of any global labels
+	defined in that area.
+MODULES	
+	contains a list of modules linked by the linker and their
+	names
+LIBRARIES 
+	contains a list of the libraries linked and the modules
+	used from them
+USERBASEDEF
+	A list of all user base address definitions
+USERGLOBALDEF
+	A list of all user global variable definitions
+
+AREA is the interesting one - the others were kept because the linker
+already generates them.
+
+As an example is worth PI words, heres an example of an AREA section.
+The others are reasonably self explanitory.
+
+-- BEGIN example
+AREA _CODE
+        RADIX HEX
+        BASE 0200
+        SIZE 3754
+        ATTRIB REL CON
+        GLOBALS
+                .set_mode       0200
+                .wait_vbl       0236
+                _wait_vbl       0236
+                _enable_interrupts      026F
+                _disable_interrupts     0271
+                _set_interrupts 0273
+                _simple_enum    027E
+AREA _DATA
+        RADIX HEX
+        BASE 3954
+        SIZE 00AA
+        ATTRIB REL CON
+        GLOBALS
+                _digits 39FC
+-- END example
+This section defines two areas - _CODE which is the standard C code
+segment and _DATA which is the standard C data (static variables)
+segment.  _CODE runs from 0x0200 to 0x3754 + 0x0200 and was originally
+RELocatable.  Quite a few GLOBALS survived through the link process
+including _simple_enum which begins at absolute address 0x027E.  Note that
+due to the way C exports function labels, this means that the function
+simple_enum() begins at 0x027E - so a debugger could set a breakpoint
+at 0x027E when asked to break when simple_enum() is called.  This can
+also be used to give a call back stack by modifying the CALL <fun>
+in an assembler to push the name of the function called, allowing
+you to see what function called a routine.
+
+Note the tabs between the globals name and the value and that the
+list within a section is sorted by value.  In the current implementation
+HEX is the only possible RADIX.

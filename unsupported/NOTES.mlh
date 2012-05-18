@@ -1,0 +1,24 @@
+from putfloat(a*b) complaint about arg (a*b)
+(80b3584->op=ARGF4 at float.c:10 is corrupt.)
+rcc: src/gen.c:185: getrule: Assertion `0' failed.
+lcc: fatal error in /usr/lib/gbdk/gb-rrgb/2.0/bin/rcc
+
+(80b3584->op=ARGF4 at float.c:10 is corrupt.)
+rcc: src/gen.c:185: getrule: Assertion `0' failed.
+lcc: fatal error in /usr/lib/gbdk/gb-rrgb/2.0/bin/rcc
+
+a = b*2 - fatal error in rcc
+
+4/6/98
+	-- Added malloc.c, realloc.c, free.c, calloc.c to lib-gb and lib-rrgb
+	-- Changed stdlib.h to include malloc etc prototypes
+	-- Added file lib/sys/malloc.h to include globals structure for malloc etc
+	-- Added memset.s to lib-gb and lib-rrgb
+	-- Changed string.h to include memset entry
+	-- Changed crt0.s in lib-rrgb and lib-gb to include _HEAP segment to
+support malloc routines.
+	-- Changed output.s in lib-rrgb so that .tmode just returns
+	-- Added gb.lib dependancy to lib-rrgb ONLY so that gb.lib is automatically built
+	   (Can't currently auto-build make.bat)
+	-- Added mem.c example of malloc routines to lib-rrgb
+	-- Note that debug is currently enabled in the malloc routines

@@ -1,0 +1,3014 @@
+%{
+enum { HL=0, BC=1, DE=2 };
+#include "c.h"
+#define NODEPTR_TYPE Node
+#define OP_LABEL(p) ((p)->op)
+#define LEFT_CHILD(p) ((p)->kids[0])
+#define RIGHT_CHILD(p) ((p)->kids[1])
+#define LEFT_X_CHILD(p) ((p)->x.kids[0])
+#define RIGHT_X_CHILD(p) ((p)->x.kids[1])
+#define STATE_LABEL(p) ((p)->x.state)
+static void address(Symbol, Symbol, long);
+static void blkfetch(int, int, int, int);
+static void blkloop(int, int, int, int, int, int[]);
+static void blkstore(int, int, int, int);
+static void defaddress(Symbol);
+static void defconst(int, int, Value);
+static void defstring(int, char *);
+static void defsymbol(Symbol);
+static void doarg(Node);
+static void emit2(Node);
+static void export(Symbol);
+static void clobber(Node);
+static void function(Symbol, Symbol [], Symbol [], int);
+static void global(Symbol);
+static void import(Symbol);
+static void local(Symbol);
+static void progbeg(int, char **);
+static void progend(void);
+static void segment(int);
+static void space(int);
+static void target(Node);
+static int ckstack(Node, int);
+static int memop(Node);
+static int sametree(Node, Node);
+
+static void debug_node(Node p);
+static void offsetsp(int);
+static void offsethl(int);
+static void mv_8_8(int dreg, int sreg);
+static void mv_16_16(int dreg, int sreg);
+static void cvt_s8_16(int dreg, int sreg);
+static void cvt_u8_16(int dreg, int sreg);
+static void load_acc(long val, int byte, int checklast);
+long const_val(Node p);
+
+#define LOW 0
+#define HIGH 1
+
+#define STR str_alloc
+/* #define STR stringf */
+
+static Symbol charreg[32], intreg[32];
+static Symbol fltreg[32];
+
+static Symbol charregw, intregw, fltregw;
+
+static char *hreg[] = { "H", "B", "D" };
+static char *lreg[] = { "L", "C", "E" };
+
+static int cseg;
+static char rom_bank_str[32];
+static char ram_bank_str[32];
+static int argstack;
+static int optimize;
+
+#include "opt.c"
+
+%}
+%start stmt
+%term CNSTF2=2065
+%term CNSTI1=1045 CNSTI2=2069
+%term CNSTP2=2071
+%term CNSTU1=1046 CNSTU2=2070
+
+%term ARGB=41
+%term ARGF2=2081
+%term ARGI1=1061 ARGI2=2085
+%term ARGP2=2087
+%term ARGU1=1062 ARGU2=2086
+
+%term ASGNB=57
+%term ASGNF2=2097
+%term ASGNI1=1077 ASGNI2=2101
+%term ASGNP2=2103
+%term ASGNU1=1078 ASGNU2=2102
+
+%term INDIRB=73
+%term INDIRF2=2113
+%term INDIRI1=1093 INDIRI2=2117
+%term INDIRP2=2119
+%term INDIRU1=1094 INDIRU2=2118
+
+%term CVFF2=2161
+%term CVFI1=1141 CVFI2=2165
+
+%term CVIF2=2177
+%term CVII1=1157 CVII2=2181
+%term CVIU1=1158 CVIU2=2182
+
+%term CVPU2=2198
+
+%term CVUI1=1205 CVUI2=2229
+%term CVUP2=2231
+%term CVUU1=1206 CVUU2=2230
+
+%term NEGF2=2241
+%term NEGI1=1221 NEGI2=2245
+
+%term CALLB=217
+%term CALLF2=2257
+%term CALLI1=1237 CALLI2=2261
+%term CALLP2=2263
+%term CALLU1=1238 CALLU2=2262
+%term CALLV=216
+
+%term RETF2=2289
+%term RETI1=1269 RETI2=2293
+%term RETP2=2295
+%term RETU1=1270 RETU2=2294
+%term RETV=248
+
+%term ADDRGP2=2311
+
+%term ADDRFP2=2327
+
+%term ADDRLP2=2343
+
+%term ADDF2=2353
+%term ADDI1=1333 ADDI2=2357
+%term ADDP2=2359
+%term ADDU1=1334 ADDU2=2358
+
+%term SUBF2=2369
+%term SUBI1=1349 SUBI2=2373
+%term SUBP2=2375
+%term SUBU1=1350 SUBU2=2374
+
+%term LSHI1=1365 LSHI2=2389
+%term LSHU1=1366 LSHU2=2390
+
+%term MODI1=1381 MODI2=2405
+%term MODU1=1382 MODU2=2406
+
+%term RSHI1=1397 RSHI2=2421
+%term RSHU1=1398 RSHU2=2422
+
+%term BANDI1=1413 BANDI2=2437
+%term BANDU1=1414 BANDU2=2438
+
+%term BCOMI1=1429 BCOMI2=2453
+%term BCOMU1=1430 BCOMU2=2454
+
+%term BORI1=1445 BORI2=2469
+%term BORU1=1446 BORU2=2470
+
+%term BXORI1=1461 BXORI2=2485
+%term BXORU1=1462 BXORU2=2486
+
+%term DIVF2=2497
+%term DIVI1=1477 DIVI2=2501
+%term DIVU1=1478 DIVU2=2502
+
+%term MULF2=2513
+%term MULI1=1493 MULI2=2517
+%term MULU1=1494 MULU2=2518
+
+%term EQF2=2529
+%term EQI1=1509 EQI2=2533
+%term EQU1=1510 EQU2=2534
+
+%term GEF2=2545
+%term GEI1=1525 GEI2=2549
+%term GEU1=1526 GEU2=2550
+
+%term GTF2=2561
+%term GTI1=1541 GTI2=2565
+%term GTU1=1542 GTU2=2566
+
+%term LEF2=2577
+%term LEI1=1557 LEI2=2581
+%term LEU1=1558 LEU2=2582
+
+%term LTF2=2593
+%term LTI1=1573 LTI2=2597
+%term LTU1=1574 LTU2=2598
+
+%term NEF2=2609
+%term NEI1=1589 NEI2=2613
+%term NEU1=1590 NEU2=2614
+
+%term JUMPV=584
+
+%term LABELV=600
+
+%term LOADB=233
+%term LOADF2=2273
+%term LOADI1=1253 LOADI2=2277
+%term LOADP2=2279
+%term LOADU1=1254 LOADU2=2278
+
+%term VREGP=711
+%%
+reg:  INDIRI1(VREGP)     "# INDIRI1\n"
+reg:  INDIRU1(VREGP)     "# INDIRU1\n"
+
+reg:  INDIRI2(VREGP)     "# INDIRI2\n"
+reg:  INDIRU2(VREGP)     "# INDIRU2\n"
+reg:  INDIRP2(VREGP)     "# INDIRP2\n"
+
+stmt: ASGNI1(VREGP,reg)  "# ASGNI1\n"
+stmt: ASGNU1(VREGP,reg)  "# ASGNU1\n"
+
+stmt: ASGNI2(VREGP,reg)  "# ASGNI2\n"
+stmt: ASGNU2(VREGP,reg)  "# ASGNU2\n"
+stmt: ASGNP2(VREGP,reg)  "# ASGNP2\n"
+
+con:  CNSTI1  "%#%a"
+con:  CNSTU1  "%#%a"
+con:  CNSTI2  "%#%a"
+con:  CNSTU2  "%#%a"
+con:  CNSTP2  "%#%a"
+
+con8: CNSTI1  "%#%a"  range(a, 0, 255)
+con8: CNSTU1  "%#%a"  range(a, 0, 255)
+con8: CNSTI2  "%#%a"  range(a, 0, 255)
+con8: CNSTU2  "%#%a"  range(a, 0, 255)
+
+stmt: reg     ""
+
+reg:  ADDRGP2 "# ADDRGP2\n"  1
+reg:  ADDRFP2 "# ADDRFP2\n"  3
+reg:  ADDRLP2 "# ADDRLP2\n"  3
+
+stk:  ADDRFP2 "%a+%F(SP)"
+stk:  ADDRLP2 "%a+%F(SP)"
+
+acon: ADDRGP2 "(%#%a)"
+acon: con     "(%0)"
+
+base: acon    "%0"
+base: reg     "%0"  3
+
+addr: base    "%0"
+addr: stk     "%0"
+
+mem:  INDIRI1(addr)  "# INDIRI1"
+mem:  INDIRU1(addr)  "# INDIRU1"
+
+rc:   con     "%0"
+rc:   reg     "%0"
+
+mr:   mem     "%0"  3
+mr:   reg     "%0"
+
+mrc:  mem     "%0"  3
+mrc:  rc      "%0"
+
+reg:  addr    "# addr\n"  1
+reg:  mrc     "# mrc\n"   1
+
+reg:  INDIRI1(addr)   "# INDIRI1\n"  4
+reg:  INDIRU1(addr)   "# INDIRU1\n"  4
+reg:  INDIRI2(addr)   "# INDIRI2\n"  4
+reg:  INDIRU2(addr)   "# INDIRU2\n"  4
+reg:  INDIRP2(addr)   "# INDIRP2\n"  4
+
+reg:  LOADI1(reg)     "# LOADI1\n"  move(a)
+reg:  LOADU1(reg)     "# LOADU1\n"  move(a)
+reg:  LOADI2(reg)     "# LOADI2\n"  move(a)
+reg:  LOADU2(reg)     "# LOADU2\n"  move(a)
+reg:  LOADP2(reg)     "# LOADP2\n"  move(a)
+
+reg:  ADDI1(reg,mrc)  "# ADDI1\n"  1
+reg:  ADDU1(reg,mrc)  "# ADDU1\n"  1
+reg:  ADDI2(reg,rc)   "# ADDI2\n"  1
+reg:  ADDU2(reg,rc)   "# ADDU2\n"  1
+reg:  ADDP2(reg,rc)   "# ADDP2\n"  1
+
+reg:  SUBI1(reg,mrc)  "# SUBI1\n"  1
+reg:  SUBU1(reg,mrc)  "# SUBU1\n"  1
+reg:  SUBI2(reg,rc)   "# SUBI2\n"  1
+reg:  SUBU2(reg,rc)   "# SUBU2\n"  1
+reg:  SUBP2(reg,rc)   "# SUBP2\n"  1
+
+reg:  BANDI1(reg,mrc) "# BANDI1\n" 1
+reg:  BANDU1(reg,mrc) "# BANDU1\n" 1
+reg:  BANDI2(reg,rc)  "# BANDI2\n" 1
+reg:  BANDU2(reg,rc)  "# BANDU2\n" 1
+
+reg:  BORI1(reg,mrc)  "# BORI1\n"  1
+reg:  BORU1(reg,mrc)  "# BORU1\n"  1
+reg:  BORI2(reg,rc)   "# BORI2\n"  1
+reg:  BORU2(reg,rc)   "# BORU2\n"  1
+
+reg:  BXORI1(reg,mrc) "# BXORI1\n" 1
+reg:  BXORU1(reg,mrc) "# BXORU1\n" 1
+reg:  BXORI2(reg,rc)  "# BXORI2\n" 1
+reg:  BXORU2(reg,rc)  "# BXORU2\n" 1
+
+reg:  BCOMI1(mr)      "# BCOMI1\n" 1
+reg:  BCOMU1(mr)      "# BCOMU1\n" 1
+reg:  BCOMI2(reg)     "# BCOMI2\n" 1
+reg:  BCOMU2(reg)     "# BCOMU2\n" 1
+
+reg:  NEGI1(mr)       "# NEGI1\n"  1
+reg:  NEGI2(reg)      "# NEGI2\n"  1
+
+rc8:  con8   "%0"
+rc8:  reg    "%0"  5
+
+reg:  LSHI1(reg,rc8)  "# LSHI1\n"   8
+reg:  LSHI2(reg,rc8)  "# LSHI2\n"   16
+reg:  LSHU1(reg,rc8)  "# LSHU1\n"   8
+reg:  LSHU2(reg,rc8)  "# LSHU2\n"   16
+
+reg:  RSHI1(reg,rc8)  "# RSHI1\n"   8
+reg:  RSHI2(reg,rc8)  "# RSHI2\n"   16
+reg:  RSHU1(reg,rc8)  "# RSHU1\n"   8
+reg:  RSHU2(reg,rc8)  "# RSHU2\n"   16
+
+reg:  MULI1(reg,reg)  "# MULI1\n"   16
+reg:  MULI2(reg,reg)  "# MULI2\n"   16
+reg:  MULU1(reg,reg)  "# MULU1\n"   16
+reg:  MULU2(reg,reg)  "# MULU2\n"   16
+
+reg:  DIVI1(reg,reg)  "# DIVI1\n"   16
+reg:  DIVI2(reg,reg)  "# DIVI2\n"   16
+reg:  DIVU1(reg,reg)  "# DIVU1\n"   16
+reg:  DIVU2(reg,reg)  "# DIVU2\n"   16
+
+reg:  MODI1(reg,reg)  "# MODI1\n"   16
+reg:  MODI2(reg,reg)  "# MODI2\n"   16
+reg:  MODU1(reg,reg)  "# MODU1\n"   16
+reg:  MODU2(reg,reg)  "# MODU2\n"   16
+
+stmt: ASGNI1(addr,ADDI1(mem,rc))    "# ADDI1\n"  memop(a)
+stmt: ASGNU1(addr,ADDU1(mem,rc))    "# ADDU1\n"  memop(a)
+stmt: ASGNI1(addr,SUBI1(mem,rc))    "# SUBI1\n"  memop(a)
+stmt: ASGNU1(addr,SUBU1(mem,rc))    "# SUBU1\n"  memop(a)
+stmt: ASGNI1(addr,BANDI1(mem,rc))   "# BANDI1\n" memop(a)
+stmt: ASGNU1(addr,BANDU1(mem,rc))   "# BANDU1\n" memop(a)
+stmt: ASGNI1(addr,BORI1(mem,rc))    "# BORI1\n"  memop(a)
+stmt: ASGNU1(addr,BORU1(mem,rc))    "# BORU1\n"  memop(a)
+stmt: ASGNI1(addr,BXORI1(mem,rc))   "# BXORI1\n" memop(a)
+stmt: ASGNU1(addr,BXORU1(mem,rc))   "# BXORU1\n" memop(a)
+stmt: ASGNI1(addr,BCOMI1(mem))      "# BCOMI1\n" memop(a)
+stmt: ASGNU1(addr,BCOMU1(mem))      "# BCOMU1\n" memop(a)
+stmt: ASGNI1(addr,NEGI1(mem))       "# NEGI1\n"  memop(a)
+stmt: ASGNI1(addr,LSHI1(mem,con8))  "# LSHI1\n"  memop(a)
+stmt: ASGNU1(addr,LSHU1(mem,con8))  "# LSHU1\n"  memop(a)
+stmt: ASGNI1(addr,RSHI1(mem,con8))  "# RSHI1\n"  memop(a)
+stmt: ASGNU1(addr,RSHU1(mem,con8))  "# RSHU1\n"  memop(a)
+
+reg:  CVII1(reg)  "# CVII1\n"  1
+reg:  CVIU1(reg)  "# CVIU1\n"  1
+reg:  CVUI1(reg)  "# CVUI1\n"  1
+reg:  CVUU1(reg)  "# CVUU1\n"  1
+
+reg:  CVII2(reg)  "# CVII2\n"  1
+reg:  CVIU2(reg)  "# CVIU2\n"  1
+reg:  CVUI2(reg)  "# CVUI2\n"  1
+reg:  CVUU2(reg)  "# CVUU2\n"  1
+
+reg:  CVUP2(reg)  "# CVUP2\n"  1
+reg:  CVPU2(reg)  "# CVPU2\n"  move(a)
+
+stmt: ASGNI1(addr,rc)  "# ASGNI1\n"   3
+stmt: ASGNU1(addr,rc)  "# ASGNU1\n"   3
+stmt: ASGNI2(addr,rc)  "# ASGNI2\n"   3
+stmt: ASGNU2(addr,rc)  "# ASGNU2\n"   3
+stmt: ASGNP2(addr,rc)  "# ASGNP2\n"   3
+stmt: ASGNI1(stk,rc)   "# ASGNI1\n"   1
+stmt: ASGNU1(stk,rc)   "# ASGNU1\n"   1
+stmt: ASGNI2(stk,rc)   "# ASGNI2\n"   1
+stmt: ASGNU2(stk,rc)   "# ASGNU2\n"   1
+stmt: ASGNP2(stk,rc)   "# ASGNP2\n"   1
+
+stmt: ARGI1(rc)   "# ARGI1\n"  1
+stmt: ARGU1(rc)   "# ARGU1\n"  1
+stmt: ARGI2(reg)  "# ARGI2\n"  1
+stmt: ARGU2(reg)  "# ARGU2\n"  1
+stmt: ARGP2(reg)  "# ARGP2\n"  1
+
+stmt: ASGNB(reg,INDIRB(reg))  "# ASGNB\n"
+stmt: ARGB(INDIRB(reg))       "# ARGB\n"
+
+addrj: ADDRGP2 "%a"
+addrj: reg     "(%0)"  2
+
+stmt: JUMPV(addrj)  "# JUMPV\n" 3
+stmt: LABELV        "# LABELV\n"
+
+stmt: EQI1(reg,mrc) "# EQI1\n"  3
+stmt: EQU1(reg,mrc) "# EQU1\n"  3
+stmt: NEI1(reg,mrc) "# NEI1\n"  3
+stmt: NEU1(reg,mrc) "# NEU1\n"  3
+
+stmt: GEI1(reg,mrc) "# GEI1\n"  4
+stmt: GEU1(reg,mrc) "# GEU1\n"  4
+stmt: LTI1(reg,mrc) "# LTI1\n"  4
+stmt: LTU1(reg,mrc) "# LTU1\n"  4
+
+stmt: GTI1(reg,mrc) "# GTI1\n"  5
+stmt: GTU1(reg,mrc) "# GTU1\n"  5
+stmt: LEI1(reg,mrc) "# LEI1\n"  5
+stmt: LEU1(reg,mrc) "# LEU1\n"  5
+
+stmt: EQI1(mem,con) "# EQI1\n"  2
+stmt: EQU1(mem,con) "# EQU1\n"  2
+stmt: NEI1(mem,con) "# NEI1\n"  2
+stmt: NEU1(mem,con) "# NEU1\n"  2
+
+stmt: GEI1(mem,con) "# GEI1\n"  3
+stmt: GEU1(mem,con) "# GEU1\n"  3
+stmt: LTI1(mem,con) "# LTI1\n"  3
+stmt: LTU1(mem,con) "# LTU1\n"  3
+
+stmt: GTI1(mem,con) "# GTI1\n"  4
+stmt: GTU1(mem,con) "# GTU1\n"  4
+stmt: LEI1(mem,con) "# LEI1\n"  4
+stmt: LEU1(mem,con) "# LEU1\n"  4
+
+stmt: EQI2(reg,rc)  "# EQI2\n"  6
+stmt: EQU2(reg,rc)  "# EQU2\n"  6
+stmt: NEI2(reg,rc)  "# NEI2\n"  6
+stmt: NEU2(reg,rc)  "# NEU2\n"  6
+
+stmt: GEI2(reg,rc)  "# GEI2\n"  7
+stmt: GEU2(reg,rc)  "# GEU2\n"  7
+stmt: LTI2(reg,rc)  "# LTI2\n"  7
+stmt: LTU2(reg,rc)  "# LTU2\n"  7
+
+stmt: GTI2(reg,rc)  "# GTI2\n"  8
+stmt: GTU2(reg,rc)  "# GTU2\n"  8
+stmt: LEI2(reg,rc)  "# LEI2\n"  8
+stmt: LEU2(reg,rc)  "# LEU2\n"  8
+
+reg:  CALLI1(addrj) "# CALLI1\n"
+reg:  CALLU1(addrj) "# CALLU1\n"
+reg:  CALLI2(addrj) "# CALLI2\n"
+reg:  CALLU2(addrj) "# CALLU2\n"
+reg:  CALLP2(addrj) "# CALLP2\n"
+stmt: CALLV(addrj)  "# CALLV\n"
+
+stmt: RETI1(reg)    "# RETI1\n"
+stmt: RETU1(reg)    "# RETU1\n"
+stmt: RETI2(reg)    "# RETI2\n"
+stmt: RETU2(reg)    "# RETU2\n"
+stmt: RETP2(reg)    "# RETP2\n"
+stmt: RETV(reg)     "# RETV\n"
+
+reg:  INDIRF2(VREGP)    "# INDIRF2\n"
+
+stmt: ASGNF2(VREGP,reg) "# ASGNF2\n"
+
+reg: INDIRF2(addr)      "# INDIRF2\n"
+stmt: ASGNF2(addr,reg)  "# ASGNF2\n"
+stmt: ARGF2(reg)        "# ARGF2\n"
+flt: reg   "%0"
+reg: NEGF2(reg)         "# NEGF2\n"
+reg: ADDF2(reg,flt)     "# ADDF2\n"
+reg: DIVF2(reg,flt)     "# DIVF2\n"
+reg: MULF2(reg,flt)     "# MULF2\n"
+reg: SUBF2(reg,flt)     "# SUBF2\n"
+reg: CVFF2(reg)         "# CVFF2\n"
+reg: CVFI1(reg)         "# CVFI1\n"
+reg: CVFI2(reg)         "# CVFI2\n"
+reg: CVIF2(reg)         "# CVIF2\n"
+
+stmt: EQF2(reg,reg)     "# EQF2\n"
+stmt: GEF2(reg,reg)     "# GEF2\n"
+stmt: GTF2(reg,reg)     "# GTF2\n"
+stmt: LEF2(reg,reg)     "# LEF2\n"
+stmt: LTF2(reg,reg)     "# LTF2\n"
+
+reg: CALLF2(addrj)      "# CALLF2\n"
+
+stmt: RETF2(reg)        "# RETF2\n"
+%%
+
+/*
+
+  Future optimizations:
+
+- Optimize:
+
+stmt: ASGNI2(addr,ADDI2(mem,rc))    "# ADDI2"  memop(a)
+stmt: ASGNU2(addr,ADDU2(mem,rc))    "# ADDU2"  memop(a)
+stmt: ASGNI2(addr,SUBI2(mem,rc))    "# SUBI2"  memop(a)
+stmt: ASGNU2(addr,SUBU2(mem,rc))    "# SUBU2"  memop(a)
+stmt: ASGNI2(addr,BANDI2(mem,rc))   "# BANDI2" memop(a)
+stmt: ASGNU2(addr,BANDU2(mem,rc))   "# BANDU2" memop(a)
+stmt: ASGNI2(addr,BORI2(mem,rc))    "# BORI2"  memop(a)
+stmt: ASGNU2(addr,BORU2(mem,rc))    "# BORU2"  memop(a)
+stmt: ASGNI2(addr,BXORI2(mem,rc))   "# BXORI2" memop(a)
+stmt: ASGNU2(addr,BXORU2(mem,rc))   "# BXORU2" memop(a)
+stmt: ASGNI2(addr,BCOMI2(mem))      "# BCOMI2" memop(a)
+stmt: ASGNU2(addr,BCOMU2(mem))      "# BCOMU2" memop(a)
+stmt: ASGNI2(addr,NEGI2(mem))       "# NEGI2"  memop(a)
+stmt: ASGNI2(addr,LSHI2(mem,con8))  "# LSHI2"  memop(a)
+stmt: ASGNU2(addr,LSHU2(mem,con8))  "# LSHU2"  memop(a)
+stmt: ASGNI2(addr,RSHI2(mem,con8))  "# RSHI2"  memop(a)
+stmt: ASGNU2(addr,RSHU2(mem,con8))  "# RSHU2"  memop(a)
+
+  .mul8, .div8, etc. in crt0s
+
+- Add:
+
+  stmt: EQI2(reg,mrc)
+  stmt: EQU2(reg,mrc)
+  stmt: EQI2(mem,con)
+  stmt: EQU2(mem,con)
+  etc...
+
+  reg: MULx1(reg,mrc)
+  reg: MULx2(reg,mrc)
+  reg: DIVx1(reg,mrc)
+  etc...
+
+  stmt: ASGNx2(addr,ADDx2(mem,rc))
+  stmt: ASGNx2(addr,SUBx2(mem,rc))
+  etc...
+
+  reg: MULx1(reg,rc)
+  reg: MULx2(reg,rc)
+  reg: DIVx1(reg,rc)
+  etc...
+
+*/
+
+/*
+
+How to compare 2 values?
+************************
+
+if(B >= D) <=> if(D <= B): UNSIGNED
+***********************************
+
+LD A,B
+CP D       ; B - D
+           ; C is set if B < D
+           ; C is no set if B >= D
+JP NC,addr ; Jump if B >= D
+
+if(B >= D) <=> if(D <= B): SIGNED
+*********************************
+
+LD A,B
+SUB D      ; B - D
+           ; Is (B - D) >= 0?
+AND 0x80   ; Is A positive?
+           ; Z is set if A is positive, i.e. B >= D
+           ; Z is no set if A is negative, i.e. B < D
+JP Z,addr  ; Jump if B >= D
+
+
+		RL D
+		CCF
+		RR D
+		LD A,B
+		ADD 0x80
+		CP D
+#
+		RRA		; Store C
+		RL D
+		CCF
+		RR D
+		RLA		; Restore C
+#
+		JP NC,addr
+
+************************************************************
+
+if(B > D) <=> if(D < B): UNSIGNED
+*********************************
+
+LD A,D
+CP B       ; D - B
+           ; C is set if B > D
+           ; C is no set if B >= D
+JP C,addr  ; Jump if B > D
+
+if(B > D) <=> if(D < B): SIGNED
+*******************************
+
+LD A,D
+SUB B      ; D - B
+           ; Is (D - B) < 0?
+AND 0x80   ; Is A positive?
+           ; Z is set if A is positive, i.e. D >= B
+           ; Z is no set if A is negative, i.e. D < B
+JP NZ,addr ; Jump if D < B
+
+************************************************************
+
+if(BC >= DE) <=> if(DE <= BC)
+*****************************
+
+LD A,B
+SUB D      ; B - D
+JR NZ,1$   ; Is B == D?
+           ; B == D
+LD A,C     ; Is C >= E?
+SUB E      ; C - E
+1$:        ; B != D
+CP 0x80    ; A - 0x80
+           ; C is set if A < 0x80, i.e. A >= 0
+           ; C is no set if A >= 0x80, i.e. A < 0
+JP C,addr  ; Jump if BC >= DE
+
+************************************************************
+
+if(BC > DE) <=> if(DE < BC)
+***************************
+
+LD A,D
+SUB B      ; D - B
+JR NZ,1$   ; Is B == D?
+           ; B == D
+LD A,E     ; Is E > C?
+SUB C      ; E - C
+1$:        ; B != D
+CP 0x80    ; A - 0x80
+           ; C is set if A < 0x80, i.e. A >= 0
+           ; C is no set if A >= 0x80, i.e. A < 0
+JP NC,addr ; Jump if BC > DE
+
+*/
+
+static void progbeg(int argc, char *argv[]) {
+	int i;
+
+	{
+		union {
+			char c;
+			int i;
+		} u;
+		u.i = 0;
+		u.c = 1;
+		swap = ((int)(u.i == 1)) != IR->little_endian;
+	}
+	parseflags(argc, argv);
+	rom_bank_str[0] = ram_bank_str[0] = 0;
+	optimize = 1;
+	for(i = 0; i < argc; i++) {
+		if(strncmp(argv[i], "-BO", 3) == 0) {
+			sprintf(rom_bank_str, "_%d", atoi(argv[i] + 3));
+		} else if(strncmp(argv[i], "-BA", 3) == 0) {
+			sprintf(ram_bank_str, "_%d (OVR)", atoi(argv[i] + 3));
+		} else if(strncmp(argv[i], "-g", 2) == 0) {
+			optimize = 0;
+		}
+	}
+
+	intreg[HL] = mkreg("HL", HL, 1, IREG);
+	intreg[BC] = mkreg("BC", BC, 1, IREG);
+	intreg[DE] = mkreg("DE", DE, 1, IREG);
+
+	charreg[HL]	 = mkreg("L", HL, 1, IREG);
+	charreg[BC]	 = mkreg("C", BC, 1, IREG);
+	charreg[DE]	 = mkreg("E", DE, 1, IREG);
+
+	for(i = 0; i < 8; i++)
+		fltreg[i] = mkreg("%d", i, 0, FREG);
+
+	charregw = mkwildcard(charreg);
+	intregw = mkwildcard(intreg);
+	fltregw = mkwildcard(fltreg);
+
+	tmask[IREG] = (1<<BC) | (1<<DE);
+	vmask[IREG] = 0;
+	tmask[FREG] = 0xFF;
+	vmask[FREG] = 0;
+
+	print("\t;; File generated by GBDK 2.0, P. Felber, 1995-1997\n");
+	print("\n");
+	print("\t.globl\t.mul8, .mul16, .mulu8, .mulu16\n");
+	print("\t.globl\t.div8, .div16, .divu8, .divu16\n");
+	print("\t.globl\t.mod8, .mod16, .modu8, .modu16\n");
+	print("\t.globl\t.asr8, .asr16, .lsr8, .lsr16\n");
+	print("\t.globl\t.asl8, .asl16\n");
+	print("\n");
+	print("\t;; Ordering of segments for the linker\n");
+	print("\t.area\t_CODE%s\n", rom_bank_str);
+	print("\t.area\t_DATA%s\n", rom_bank_str);
+	print("\t.area\t_LIT%s\n", rom_bank_str);
+	print("\t.area\t_BSS%s\n", ram_bank_str);
+	print("\n");
+
+	cseg = 0;
+	argstack = 0;
+}
+
+static Symbol rmap(int opk) {
+	switch(optype(opk)) {
+	case B: case P:
+		return intregw;
+	case I: case U:
+		if(opsize(opk) == 1)
+			return charregw;
+		else
+			return intregw;
+	case F:
+		return fltregw;
+	default:
+		return 0;
+	}
+}
+
+static void segment(int n) {
+	if(n == cseg)
+		return;
+	generate();
+	if(cseg == CODE)
+		print("\t;; _CODE%s ends\n", rom_bank_str);
+	else if(cseg == LIT)
+		print("\t;; _LIT%s ends\n", rom_bank_str);
+	else if(cseg == DATA)
+		print("\t;; _DATA%s ends\n", rom_bank_str);
+	else if(cseg == BSS)
+		print("\t;; _BSS%s ends\n", ram_bank_str);
+	cseg = n;
+	if(cseg == CODE)
+		print("\t.area\t_CODE%s\n", rom_bank_str);
+	else if(cseg == LIT)
+		print("\t.area\t_LIT%s\n", rom_bank_str);
+	else if(cseg == DATA)
+		print("\t.area\t_DATA%s\n", rom_bank_str);
+	else if(cseg == BSS)
+		print("\t.area\t_BSS%s\n", ram_bank_str);
+}
+
+static void progend(void) {
+	segment(0);
+	generate();
+	if(optimize) {
+		print("\t;; Optimization summary\n");
+		print("\t;;   Rule 1: %d\n", rule1);
+		print("\t;;   Rule 2: %d\n", rule2);
+	}
+	print("\t;; End of program\n");
+}
+
+#define HARDWARE_REG_STR "__reg_"
+#define HARDWARE_REG_LEN 6
+#define HARDWARE_REG(addr) (!strncmp(addr, HARDWARE_REG_STR, HARDWARE_REG_LEN))
+
+#define REG(p)  (getregnum(p))
+#define LEFT_CHILD_REG(p)  (REG(LEFT_CHILD(p)))
+#define RIGHT_CHILD_REG(p)  (REG(RIGHT_CHILD(p)))
+#define LEFT_X_CHILD_REG(p)  (REG(LEFT_X_CHILD(p)))
+#define RIGHT_X_CHILD_REG(p)  (REG(RIGHT_X_CHILD(p)))
+#define RIGHT_REG(p) \
+	(p->kids[1]->x.registered ? RIGHT_CHILD_REG(p) : \
+	(p->x.kids[1] ? RIGHT_X_CHILD_REG(p) : LEFT_X_CHILD_REG(p)))
+#define LEFT_REG(p) \
+	(p->kids[0]->x.registered ? LEFT_CHILD_REG(p) : \
+	(p->x.kids[0] ? LEFT_X_CHILD_REG(p) : LEFT_X_CHILD_REG(p)))
+
+#define VAL(p) \
+	((generic(p->op) == CNST \
+	|| specific(p->op) == ADDRG+P) ? \
+	p->syms[0]->x.name : \
+	p->syms[RX]->u.t.cse->syms[0]->x.name)
+#define RIGHT_VAL(p) VAL(p->kids[1])
+#define LEFT_VAL(p) VAL(p->kids[0])
+
+#define IS_CONST(p) \
+	(!p->x.registered \
+	&& (generic(p->op) == CNST \
+	|| (generic(p->op) == INDIR \
+	&& p->kids[0]->op == VREG+P \
+	&& p->syms[RX]->u.t.cse \
+	&& generic(p->syms[RX]->u.t.cse->op) == CNST)))
+#define IS_RIGHT_CONST(p) IS_CONST(p->kids[1])
+#define IS_LEFT_CONST(p) IS_CONST(p->kids[0])
+
+#define IS_ADDRGP(p) \
+	(!p->x.registered \
+	&& (specific(p->op) == ADDRG+P \
+	|| (generic(p->op) == INDIR \
+	&& p->kids[0]->op == VREG+P \
+	&& p->syms[RX]->u.t.cse \
+	&& specific(p->syms[RX]->u.t.cse->op) == ADDRG+P)))
+#define IS_RIGHT_ADDRGP(p) IS_ADDRGP(p->kids[1])
+#define IS_LEFT_ADDRGP(p) IS_ADDRGP(p->kids[0])
+
+#define IS_INDIR(p) \
+	(generic(p->op) == INDIR \
+	&& !p->x.registered \
+	&& p->kids[0]->op != VREG+P)
+#define IS_RIGHT_INDIR(p) (IS_INDIR(p->kids[1]))
+#define IS_LEFT_INDIR(p) (IS_INDIR(p->kids[0]))
+
+#define IS_LEFT_ADDRFP(p) \
+	(specific(p->kids[0]->op) == ADDRF+P)
+
+#define IS_LEFT_ADDRLP(p) \
+	(specific(p->kids[0]->op) == ADDRL+P)
+
+static void target(Node p) {
+	assert(p);
+	switch(specific(p->op)) {
+
+		case CALL+I: case CALL+U: case CALL+P: case CALL+V:
+			setreg(p, intreg[DE]);
+			if(!IS_LEFT_CONST(p))
+				rtarget(p, 0, intreg[HL]);
+			break;
+		case RET+I: case RET+U: case RET+P:
+			/* Return value in DE */
+			rtarget(p, 0, intreg[DE]);
+			break;
+		case JUMP+V:
+			if(!IS_LEFT_CONST(p))
+				rtarget(p, 0, intreg[HL]);
+			break;
+		case MUL+I: case MUL+U:
+			setreg(p, intreg[BC]);
+			rtarget(p, 0, intreg[BC]);
+			rtarget(p, 1, intreg[DE]);
+			break;
+		case DIV+I: case DIV+U:
+			setreg(p, intreg[BC]);
+			rtarget(p, 0, intreg[BC]);
+			rtarget(p, 1, intreg[DE]);
+			break;
+		case MOD+I: case MOD+U:
+			setreg(p, intreg[DE]);
+			rtarget(p, 0, intreg[BC]);
+			rtarget(p, 1, intreg[DE]);
+			break;
+		case LSH+I: case LSH+U:
+		case RSH+I: case RSH+U:
+			if(generic(p->kids[1]->op) != CNST) {
+				setreg(p, intreg[BC]);
+				rtarget(p, 0, intreg[BC]);
+			}
+			break;
+	}
+}
+
+static void clobber(Node p) {
+	static int nstack = 0;
+
+	assert(p);
+
+	nstack = ckstack(p, nstack);
+	assert(p->count > 0 || nstack == 0);
+
+	switch (p->op) {
+	}
+}
+
+static int memop(Node p) {
+        assert(p);
+        assert(generic(p->op) == ASGN);
+        assert(p->kids[0]);
+        assert(p->kids[1]);
+        if(generic(p->kids[1]->kids[0]->op) == INDIR
+        && sametree(p->kids[0], p->kids[1]->kids[0]->kids[0]))
+                return 1;
+        else
+                return LBURG_MAX;
+}
+
+static int sametree(Node p, Node q) {
+        return p == NULL && q == NULL
+        || p && q && p->op == q->op && p->syms[0] == q->syms[0]
+                && sametree(p->kids[0], q->kids[0])
+                && sametree(p->kids[1], q->kids[1]);
+}
+
+static void debug_node(Node p) {
+	int i, j;
+
+	print("%s\n", opname(p->op));
+	print("#%d %s (%x)\n", p->x.inst, opname(p->op), (char *)p);
+	for(i = 0; i < NELEMS(p->kids) && p->kids[i]; i++) {
+		print(" kids[%d]: #%d %s (%x)\n", i, p->kids[i]->x.inst, opname(p->kids[i]->op), (char *)p->kids[i]);
+		for(j = 0; j < 3; j++) {
+			if(p->kids[i]->syms[j] && p->kids[i]->syms[j]->x.name)
+				print("  syms[%d]: %s\n", j, p->kids[i]->syms[j]->x.name);
+		}
+	}
+	for(i = 0; i < NELEMS(p->x.kids) && p->x.kids[i]; i++) {
+		print(" x.kids[%d]: #%d %s (%x)\n", i, p->x.kids[i]->x.inst, opname(p->x.kids[i]->op), (char *)p->x.kids[i]);
+		for(j = 0; j < 3; j++) {
+			if(p->x.kids[i]->syms[j] && p->x.kids[i]->syms[j]->x.name)
+				print("  syms[%d]: %s\n", j, p->x.kids[i]->syms[j]->x.name);
+		}
+	}
+	for(i = 0; i < 3; i++) {
+		if(p->syms[i] && p->syms[i]->x.name)
+			print(" syms[%d]: %s\n", i, p->syms[i]->x.name);
+	}
+	print("\n", opname(p->op));
+}
+
+static void emit2(Node p) {
+
+#ifdef DEBUG
+	debug_node(p);
+#endif
+	switch(p->op) {
+		case INDIR+I+sizeop(1):
+		case INDIR+U+sizeop(1):
+		if(p->kids[0]->op == VREG+P)
+			break;
+		{
+			int dreg = REG(p);
+			char *dst = lreg[dreg];
+																comment(STR("Load %s", dst));
+			if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+				int off = (int)const_val(LEFT_CHILD(p));
+																offsethl(off + framesize + argstack);
+																op2("LD", dst, "(HL)");
+			} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+				char *addr = LEFT_VAL(p);
+				if(HARDWARE_REG(addr)) {
+																op2("LDH", "A", STR("(%s)", addr + HARDWARE_REG_LEN));
+																op2("LD", dst, "A");
+				} else {
+																op2("LD", "A", STR("(%s)", addr));
+																op2("LD", dst, "A");
+				}
+			} else {
+				int sreg = LEFT_X_CHILD_REG(p);
+				char *src = intreg[sreg]->x.name;
+																op2("LD", "A", STR("(%s)", src));
+																op2("LD", dst, "A");
+			}
+			break;
+		}
+		case INDIR+I+sizeop(2):
+		case INDIR+U+sizeop(2):
+		case INDIR+P+sizeop(2):
+		if(p->kids[0]->op == VREG+P)
+			break;
+		{
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+																comment(STR("Load register %s", dst));
+			if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+				int off = (int)const_val(LEFT_CHILD(p));
+																offsethl(off + framesize + argstack);
+																op2("LD", "A", "(HL+)");
+																op2("LD", hreg[dreg], "(HL)");
+																op2("LD", lreg[dreg], "A");
+			} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+				char *addr = LEFT_VAL(p);
+				if(HARDWARE_REG(addr)) {
+																op2("LDH", "A", STR("(%s+1)", addr + HARDWARE_REG_LEN));
+																op2("LD", hreg[dreg], "A");
+																op2("LDH", "A", STR("(%s)", addr + HARDWARE_REG_LEN));
+																op2("LD", lreg[dreg], "A");
+				} else {
+																op2("LD", "A", STR("(%s+1)", addr));
+																op2("LD", hreg[dreg], "A");
+																op2("LD", "A", STR("(%s)", addr));
+																op2("LD", lreg[dreg], "A");
+				}
+			} else {
+				int sreg = LEFT_X_CHILD_REG(p);
+				if(sreg != HL) {
+																op2("LD", "H", hreg[sreg]);
+																op2("LD", "L", lreg[sreg]);
+				}
+																op2("LD", "A", "(HL+)");
+																op2("LD", hreg[dreg], "(HL)");
+																op2("LD", lreg[dreg], "A");
+			}
+			break;
+		}
+		case ASGN+I+sizeop(1):
+		case ASGN+U+sizeop(1):
+		if(p->kids[0]->op == VREG+P)
+			break;
+		{
+			if(p->kids[0] != NULL && p->kids[1] != NULL &&
+				(generic(p->kids[1]->op) == ADD ||
+				generic(p->kids[1]->op) == SUB ||
+				generic(p->kids[1]->op) == BAND ||
+				generic(p->kids[1]->op) == BOR ||
+				generic(p->kids[1]->op) == BXOR ||
+				generic(p->kids[1]->op) == BCOM ||
+				generic(p->kids[1]->op) == NEG ||
+				generic(p->kids[1]->op) == LSH ||
+				generic(p->kids[1]->op) == RSH) &&
+				p->kids[1]->kids[0] != NULL &&
+				generic(p->kids[1]->kids[0]->op) == INDIR &&
+				sametree(p->kids[0], p->kids[1]->kids[0]->kids[0])) {
+				Node q = p->kids[1];
+				int hw_reg = 0;
+				int at_hl = 0;
+
+				if(q->kids[1] != NULL && IS_RIGHT_CONST(q)) {
+					int n = (int)const_val(RIGHT_CHILD(q));
+					if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+						char *addr = LEFT_VAL(p);
+						if(HARDWARE_REG(addr))
+							hw_reg = 1;
+					}
+					if(!hw_reg &&
+						(((generic(q->op) == ADD || generic(q->op) == SUB) && (n >= -1 && n <= 2)) ||
+						(generic(q->op) == LSH || generic(q->op) == RSH)))
+						at_hl = 1;
+				}
+				if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+					int off = (int)const_val(LEFT_CHILD(p));
+																offsethl(off + framesize + argstack);
+					if(!at_hl)
+																op2("LD", "A", "(HL)");
+				} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+					char *addr = LEFT_VAL(p);
+					if(HARDWARE_REG(addr)) {
+																op2("LDH", "A", STR("(%s)", addr + HARDWARE_REG_LEN));
+					} else {
+						if(at_hl)
+																op2("LD", "HL", STR("#%s", addr));
+						else
+																op2("LD", "A", STR("(%s)", addr));
+					}
+				} else {
+					int sreg = LEFT_REG(p);
+					if(at_hl) {
+																op2("LD", "H", hreg[sreg]);
+																op2("LD", "L", lreg[sreg]);
+					} else {
+																op2("LD", "A", STR("(%s)", intreg[sreg]->x.name));
+					}
+				}
+				switch(generic(q->op)) {
+					/* One argument */
+					case BCOM:
+																comment("Complement (mem)");
+																op0("CPL");
+						break;
+					case NEG:
+																comment("Negate (mem)");
+																op0("CPL");
+																op1("INC", "A");
+						break;
+					/* Two arguments */
+					default:
+						if(IS_RIGHT_CONST(q)) {
+							char *val = RIGHT_VAL(q);
+							int n = (int)const_val(RIGHT_CHILD(q));
+							switch(generic(q->op)) {
+								case ADD:
+																comment(STR("Add %s to (mem)", val));
+									if(at_hl && n >= 0) {
+										while(n--)
+																op1("INC", "(HL)");
+									} else if(at_hl && n < 0) {
+										while(n++)
+																op1("DEC", "(HL)");
+									} else {
+																op1("ADD", STR("#<%s", val));
+									}
+									break;
+								case SUB:
+																comment(STR("Sub %s from (mem)", val));
+									if(at_hl && n >= 0) {
+										while(n--)
+																op1("DEC", "(HL)");
+									} else if(at_hl && n < 0) {
+										while(n++)
+																op1("INC", "(HL)");
+									} else {
+																op1("SUB", STR("#<%s", val));
+									}
+									break;
+								case BAND:
+																comment(STR("And %s and (mem)", val));
+																op1("AND", STR("#<%s", val));
+									break;
+								case BOR:
+																comment(STR("Or %s and (mem)", val));
+																op1("OR", STR("#<%s", val));
+									break;
+								case BXOR:
+																comment(STR("Xor %s and (mem)", val));
+																op1("XOR", STR("#<%s", val));
+									break;
+								case LSH:
+																comment(STR("Left shift (mem) by %s", val));
+									if(at_hl) {
+										while(n--)
+																op1("SLA", "(HL)");
+									} else {
+										while(n--)
+																op1("SLA", "A");
+									}
+									break;
+								case RSH:
+																comment(STR("Right shift (mem) by %s", val));
+									if(at_hl) {
+										while(n--)
+											if(optype(q->op) == I)
+																op1("SRA", "(HL)");
+											else
+																op1("SRL", "(HL)");
+									} else {
+										while(n--)
+											if(optype(q->op) == I)
+																op1("SRA", "A");
+											else
+																op1("SRL", "A");
+									}
+									break;
+							}
+						} else {
+							int sreg = RIGHT_REG(q);
+							switch(generic(q->op)) {
+								case ADD:
+																comment(STR("Add %s to (mem)", lreg[sreg]));
+																op1("ADD", lreg[sreg]);
+									break;
+								case SUB:
+																comment(STR("Sub %s from (mem)", lreg[sreg]));
+																op1("SUB", lreg[sreg]);
+									break;
+								case BAND:
+																comment(STR("And %s and (mem)", lreg[sreg]));
+																op1("AND", lreg[sreg]);
+									break;
+								case BOR:
+																comment(STR("Or %s and (mem)", lreg[sreg]));
+																op1("OR", lreg[sreg]);
+									break;
+								case BXOR:
+																comment(STR("Xor %s and (mem)", lreg[sreg]));
+																op1("XOR", lreg[sreg]);
+									break;
+								case LSH:
+								case RSH:
+									assert(0);
+							}
+						}
+				}
+				if(!at_hl) {
+					if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+						char *addr = LEFT_VAL(p);
+						if(hw_reg) {
+																op2("LDH", STR("(%s)", addr + HARDWARE_REG_LEN), "A");
+						} else {
+																op2("LD", STR("(%s)", addr), "A");
+						}
+					} else if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+																op2("LD", "(HL)", "A");
+					} else {
+						int sreg = LEFT_REG(p);
+																op2("LD", "A", STR("(%s)", intreg[sreg]->x.name));
+					}
+				}
+			} else if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+				int off = (int)const_val(LEFT_CHILD(p));
+																offsethl(off + framesize + argstack);
+				if(IS_RIGHT_CONST(p)) {
+					char *val = RIGHT_VAL(p);
+																comment(STR("Store %s", val));
+																op2("LD", "(HL)", STR("#<%s", val));
+				} else {
+					char *src = lreg[LEFT_X_CHILD_REG(p)];
+																comment(STR("Store %s", src));
+																op2("LD", "(HL)", src);
+				}
+			} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+				char *addr = LEFT_VAL(p);
+				if(IS_RIGHT_CONST(p)) {
+					char *val = RIGHT_VAL(p);
+																comment(STR("Store %s", val));
+																load_acc(const_val(RIGHT_CHILD(p)), LOW, 0);
+				} else {
+					char *src = lreg[LEFT_X_CHILD_REG(p)];
+																comment(STR("Store %s", src));
+																op2("LD", "A", src);
+				}
+				if(HARDWARE_REG(addr)) {
+																op2("LDH", STR("(%s)", addr + HARDWARE_REG_LEN), "A");
+				} else {
+																op2("LD", STR("(%s)", addr), "A");
+				}
+			} else {
+				int dreg = LEFT_X_CHILD_REG(p);
+				if(IS_RIGHT_CONST(p)) {
+					char *val = RIGHT_VAL(p);
+																comment(STR("Store %s", val));
+																load_acc(const_val(RIGHT_CHILD(p)), LOW, 0);
+				} else {
+					char *src = lreg[RIGHT_REG(p)];
+																comment(STR("Store %s", src));
+																op2("LD", "A", src);
+				}
+																op2("LD", STR("(%s)", intreg[dreg]->x.name), "A");
+			}
+			break;
+		}
+		case ASGN+I+sizeop(2):
+		case ASGN+U+sizeop(2):
+		case ASGN+P+sizeop(2):
+		if(p->kids[0]->op == VREG+P)
+			break;
+		{
+			if(IS_LEFT_ADDRFP(p) || IS_LEFT_ADDRLP(p)) {
+				int off = (int)const_val(LEFT_CHILD(p));
+																offsethl(off + framesize + argstack);
+				if(IS_RIGHT_CONST(p)) {
+					char *val = RIGHT_VAL(p);
+																comment(STR("Store %s", val));
+																load_acc(const_val(RIGHT_CHILD(p)), LOW, 0);
+																op2("LD", "(HL+)", "A");
+																op2("LD", "(HL)", STR("#>%s", val));
+				} else if(IS_RIGHT_ADDRGP(p)) {
+					char *val = RIGHT_VAL(p);
+																comment(STR("Store %s", val));
+																op1("PUSH", "BC");
+																op2("LD", "BC", STR("#%s", val));
+																op2("LD", "(HL)", "C");
+																op1("INC", "HL");
+																op2("LD", "(HL)", "B");
+																op1("POP", "BC");
+				} else {
+					int sreg = RIGHT_REG(p);
+																comment(STR("Store %s", intreg[sreg]->x.name));
+																op2("LD", "A", lreg[sreg]);
+																op2("LD", "(HL+)", "A");
+																op2("LD", "(HL)", hreg[sreg]);
+				}
+			} else if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+				char *addr = LEFT_VAL(p);
+				if(IS_RIGHT_CONST(p)) {
+					char *val = RIGHT_VAL(p);
+																comment(STR("Store %s", val));
+																load_acc(const_val(RIGHT_CHILD(p)), LOW, 0);
+					if(HARDWARE_REG(addr)) {
+																op2("LDH", STR("(%s)", addr + HARDWARE_REG_LEN), "A");
+																load_acc(const_val(RIGHT_CHILD(p)), HIGH, 1);
+																op2("LDH", STR("(%s+1)", addr + HARDWARE_REG_LEN), "A");
+					} else {
+																op2("LD", STR("(%s)", addr), "A");
+																load_acc(const_val(RIGHT_CHILD(p)), HIGH, 1);
+																op2("LD", STR("(%s+1)", addr), "A");
+					}
+				} else if(IS_RIGHT_ADDRGP(p)) {
+					char *val = RIGHT_VAL(p);
+																comment(STR("Store %s", val));
+																op2("LD", "HL", STR("#%s", val));
+																op2("LD", "A", "L");
+					if(HARDWARE_REG(addr)) {
+																op2("LDH", STR("(%s)", addr + HARDWARE_REG_LEN), "A");
+																op2("LD", "A", "H");
+																op2("LDH", STR("(%s+1)", addr + HARDWARE_REG_LEN), "A");
+					} else {
+																op2("LD", STR("(%s)", addr), "A");
+																op2("LD", "A", "H");
+																op2("LD", STR("(%s+1)", addr), "A");
+					}
+				} else {
+					int sreg = RIGHT_REG(p);
+																comment(STR("Store %s", intreg[sreg]->x.name));
+																op2("LD", "A", lreg[sreg]);
+					if(HARDWARE_REG(addr)) {
+																op2("LDH", STR("(%s)", addr + HARDWARE_REG_LEN), "A");
+																op2("LD", "A", hreg[sreg]);
+																op2("LDH", STR("(%s+1)", addr + HARDWARE_REG_LEN), "A");
+					} else {
+																op2("LD", STR("(%s)", addr), "A");
+																op2("LD", "A", hreg[sreg]);
+																op2("LD", STR("(%s+1)", addr), "A");
+					}
+				}
+			} else {
+				int dreg = LEFT_X_CHILD_REG(p);
+				char *dst = intreg[dreg]->x.name;
+				if(IS_RIGHT_CONST(p)) {
+					char *val = RIGHT_VAL(p);
+																comment(STR("Store %s", val));
+																load_acc(const_val(RIGHT_CHILD(p)), LOW, 0);
+																op2("LD", STR("(%s)", dst), "A");
+																op1("INC", dst);
+																load_acc(const_val(RIGHT_CHILD(p)), HIGH, 1);
+																op2("LD", STR("(%s)", dst), "A");
+				} else if(IS_RIGHT_ADDRGP(p)) {
+					char *val = RIGHT_VAL(p);
+																comment(STR("Store %s", val));
+																op2("LD", "HL", STR("#%s", val));
+																op2("LD", "A", "L");
+																op2("LD", STR("(%s)", dst), "A");
+																op1("INC", dst);
+																op2("LD", "A", "H");
+																op2("LD", STR("(%s)", dst), "A");
+				} else {
+					int sreg = RIGHT_REG(p);
+																comment(STR("Store %s", intreg[sreg]->x.name));
+																op2("LD", "A", lreg[sreg]);
+																op2("LD", STR("(%s)", dst), "A");
+																op1("INC", dst);
+																op2("LD", "A", hreg[sreg]);
+																op2("LD", STR("(%s)", dst), "A");
+				}
+			}
+			break;
+		}
+		case ASGN+B: {
+			int sreg = RIGHT_X_CHILD_REG(p);
+			char *src = intreg[sreg]->x.name;
+			int dreg = LEFT_X_CHILD_REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int size = p->syms[0]->u.c.v.i;
+																comment(STR("Assign structure from %s to %s", src, dst));
+			if(size > 4) {
+				while(size > 0) {
+					int lab = genlabel(1);
+																op2("LD", "L", STR("#%d", size > 0xFF ? 0 : size));
+					size -= (size > 0xFF ? 0x100 : size);
+																label(STR(".L%d:", lab));
+																op2("LD", "A", STR("(%s)", src));
+																op2("LD", STR("(%s)", dst), "A");
+																op1("INC", src);
+																op1("INC", dst);
+																op1("DEC", "L");
+																op2("JR", "NZ", STR(".L%d", lab));
+				}
+			} else {
+				while(size) {
+																op2("LD", "A", STR("(%s)", src));
+																op2("LD", STR("(%s)", dst), "A");
+					if(size > 1) {
+																op1("INC", src);
+																op1("INC", dst);
+					}
+					size--;
+				}
+			}
+			break;
+		}
+		case CALL+I+sizeop(1):
+		case CALL+U+sizeop(1):
+		case CALL+I+sizeop(2):
+		case CALL+U+sizeop(2):
+		case CALL+P+sizeop(2):
+		case CALL+V:
+		case CALL+B: {
+			int off = (int)const_val(p);
+			if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+				char *addr = LEFT_VAL(p);
+																op1("CALL", addr);
+			} else {
+				int sreg = LEFT_X_CHILD_REG(p);
+				char *src = intreg[sreg]->x.name;
+				int lab1 = genlabel(1);
+				int lab2 = genlabel(1);
+																op1("JR", STR(".L%d", lab2));
+																label(STR(".L%d:", lab1));
+																op1("JP", STR("(%s)", src));
+																label(STR(".L%d:", lab2));
+																op1("CALL", STR(".L%d", lab1));
+			}
+			offsetsp(off);
+			argstack -= off;
+			break;
+		}
+		case ARG+B: {
+			int lab = genlabel(1);
+			int sreg = LEFT_X_CHILD_REG(p);
+			char *src = intreg[sreg]->x.name;
+			int size = p->syms[0]->u.c.v.i;
+			if(size > 8)
+				fprintf(stderr, "WARNING: passing a big struct as parameter generates much code\n");
+																comment(STR("Pass structure parameter from %s", src));
+																offsetsp(-size);
+			argstack += size;
+																offsethl(0);
+			while(size) {
+																op2("LD", "A", STR("(%s)", src));
+																op2("LD", "(HL+)", "A");
+				if(size > 1) {
+																op1("INC", src);
+				}
+				size--;
+			}
+			break;
+		}
+		case ARG+I+sizeop(1):
+		case ARG+U+sizeop(1):
+		{
+																comment("8-bit argument");
+			if(IS_LEFT_CONST(p)) {
+																load_acc(const_val(LEFT_CHILD(p)), LOW, 0);
+			} else {
+																op2("LD", "A", lreg[LEFT_X_CHILD_REG(p)]);
+			}
+																op1("PUSH", "AF");
+																offsetsp(1);
+			argstack++;
+			break;
+		}
+		case ARG+I+sizeop(2):
+		case ARG+U+sizeop(2):
+		case ARG+P+sizeop(2): {
+			int sreg = LEFT_X_CHILD_REG(p);
+																comment("16-bit argument");
+																op1("PUSH", intreg[sreg]->x.name);
+			argstack += 2;
+			break;
+		}
+		case CVU+I+sizeop(2):
+		case CVU+U+sizeop(2):
+		case CVP+U+sizeop(2):
+		case CVU+P+sizeop(2): {
+			if(opsize(p->x.kids[0]->op) == 1) {
+																comment("Convert unsigned 8-bit to 16-bit");
+																cvt_u8_16(REG(p), LEFT_X_CHILD_REG(p));
+			} else {
+																comment("Convert unsigned 16-bit to 16-bit");
+																mv_16_16(REG(p), LEFT_X_CHILD_REG(p));
+			}
+			break;
+		}
+		case CVI+I+sizeop(2):
+		case CVI+U+sizeop(2): {
+			if(opsize(p->x.kids[0]->op) == 1) {
+																comment("Convert signed 8-bit to 16-bit");
+																cvt_s8_16(REG(p), LEFT_X_CHILD_REG(p));
+			} else {
+																comment("Convert signed 16-bit to 16-bit");
+																mv_16_16(REG(p), LEFT_X_CHILD_REG(p));
+			}
+			break;
+		}
+		case CVI+I+sizeop(1):
+		case CVU+I+sizeop(1):
+		case CVI+U+sizeop(1):
+		case CVU+U+sizeop(1): {
+																comment("Convert to 8-bit");
+																mv_8_8(REG(p), LEFT_X_CHILD_REG(p));
+			break;
+		}
+		case CNST+I+sizeop(1):
+		case CNST+U+sizeop(1): {
+			int dreg = REG(p);
+			char *val = VAL(p);
+																comment(STR("Load %s into %s", val, lreg[dreg]));
+																op2("LD", lreg[dreg], STR("#<%s", val));
+			break;
+		}
+		case CNST+I+sizeop(2):
+		case CNST+U+sizeop(2):
+		case CNST+P+sizeop(2):
+		case ADDRG+P+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			char *val = VAL(p);
+																comment(STR("Load %s into %s", val, dst));
+																op2("LD", dst, STR("#%s", val));
+			break;
+		}
+		case ADDRF+P+sizeop(2):
+		case ADDRL+P+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int off = (int)const_val(p);
+																comment(STR("Load local address into %s", dst));
+																offsethl(off + framesize + argstack);
+																op2("LD", hreg[dreg], "H");
+																op2("LD", lreg[dreg], "L");
+			break;
+		}
+		case LOAD+I+sizeop(1):
+		case LOAD+U+sizeop(1): {
+			int dreg = REG(p);
+
+			if(IS_LEFT_CONST(p)) {
+				char *val = LEFT_VAL(p);
+																comment(STR("Load local %s into %s", val, lreg[dreg]));
+																op2("LD", lreg[dreg], STR("#<%s", val));
+			} else {
+				int sreg = LEFT_X_CHILD_REG(p);
+				if(dreg != sreg)
+																op2("LD", lreg[dreg], lreg[sreg]);
+			}
+			break;
+		}
+		case LOAD+I+sizeop(2):
+		case LOAD+U+sizeop(2):
+		case LOAD+P+sizeop(2): {
+			int dreg = REG(p);
+			if(IS_LEFT_CONST(p)) {
+				char *val = LEFT_VAL(p);
+																comment(STR("Load local %s into %s", val, intreg[dreg]->x.name));
+																op2("LD", hreg[dreg], STR("#>%s", val));
+																op2("LD", lreg[dreg], STR("#<%s", val));
+			} else {
+				int sreg = LEFT_X_CHILD_REG(p);
+				if(dreg != sreg) {
+																op2("LD", hreg[dreg], hreg[sreg]);
+																op2("LD", lreg[dreg], lreg[sreg]);
+				}
+			}
+			break;
+		}
+		case ADD+I+sizeop(1):
+		case ADD+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_ADDRFP(p->kids[1]) || IS_LEFT_ADDRLP(p->kids[1]))) {
+				int off = (int)const_val(LEFT_CHILD(p->kids[1]));
+																comment(STR("Add (mem) to %s into %s", lreg[sreg1], lreg[dreg]));
+																offsethl(off + framesize + argstack);
+																op2("LD", "A", lreg[sreg1]);
+																op1("ADD", "(HL)");
+																op2("LD", lreg[dreg], "A");
+			} else if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_CONST(p->kids[1]) || IS_LEFT_ADDRGP(p->kids[1]))) {
+				char *addr = LEFT_VAL(p->kids[1]);
+																comment(STR("Add (mem) to %s into %s", lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", STR("(%s)", addr));
+																op1("ADD", "(HL)");
+																op2("LD", lreg[dreg], "A");
+			} else if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+				int n = (int)const_val(RIGHT_CHILD(p));
+																comment(STR("Add %s to %s into %s", val, lreg[sreg1], lreg[dreg]));
+				if(n >= 0 && n <= 2) {
+					if(sreg1 != dreg)
+																op2("LD", lreg[dreg], lreg[sreg1]);
+					while(n--)
+																op1("INC", lreg[dreg]);
+				} else if(n >= -2 && n <= -1) {
+					if(sreg1 != dreg)
+																op2("LD", lreg[dreg], lreg[sreg1]);
+					while(n++)
+																op1("DEC", lreg[dreg]);
+				} else {
+																op2("LD", "A", lreg[sreg1]);
+																op1("ADD", STR("#<%s", val));
+																op2("LD", lreg[dreg], "A");
+				}
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				if(IS_RIGHT_INDIR(p)) {
+																comment(STR("Add (mem) to %s into %s", lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", STR("(%s)", intreg[sreg2]->x.name));
+																op1("ADD", "(HL)");
+																op2("LD", lreg[dreg], "A");
+				} else {
+																comment(STR("Add %s to %s into %s", lreg[sreg2], lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", lreg[sreg1]);
+																op1("ADD", lreg[sreg2]);
+																op2("LD", lreg[dreg], "A");
+				}
+			}
+			break;
+		}
+		case ADD+I+sizeop(2):
+		case ADD+U+sizeop(2):
+		case ADD+P+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			char *src1 = intreg[sreg1]->x.name;
+			assert(opsize(p->x.kids[0]->op) == 2);
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+				int n = (int)const_val(RIGHT_CHILD(p));
+																comment(STR("Add %s to %s into %s", val, src1, dst));
+				if(n >= 0 && n <= 3) {
+					if(sreg1 != dreg) {
+																op2("LD", hreg[dreg], hreg[sreg1]);
+																op2("LD", lreg[dreg], lreg[sreg1]);
+					}
+					while(n--)
+																op1("INC", dst);
+				} else if(n >= -3 && n <= -1) {
+					if(sreg1 != dreg) {
+																op2("LD", hreg[dreg], hreg[sreg1]);
+																op2("LD", lreg[dreg], lreg[sreg1]);
+					}
+					while(n++)
+																op1("DEC", dst);
+				} else {
+																op2("LD", "A", lreg[sreg1]);
+																op1("ADD", STR("#<%s", val));
+																op2("LD", lreg[dreg], "A");
+																op2("LD", "A", hreg[sreg1]);
+																op1("ADC", STR("#>%s", val));
+																op2("LD", hreg[dreg], "A");
+				}
+			} else if(IS_RIGHT_ADDRGP(p)) {
+				char *val = RIGHT_VAL(p);
+																comment(STR("Add %s to %s into %s", val, src1, dst));
+																op2("LD", "HL", STR("#%s", val));
+																op2("ADD", "HL", src1);
+																op2("LD", "H", hreg[dreg]);
+																op2("LD", "L", lreg[dreg]);
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				char *src2 = intreg[sreg2]->x.name;
+				assert(opsize(p->x.kids[1]->op) == 2);
+																comment(STR("Add %s to %s into %s", src2, src1, dst));
+																op2("LD", "A", lreg[sreg1]);
+																op1("ADD", lreg[sreg2]);
+																op2("LD", lreg[dreg], "A");
+																op2("LD", "A", hreg[sreg1]);
+																op1("ADC", hreg[sreg2]);
+																op2("LD", hreg[dreg], "A");
+			}
+			break;
+		}
+		case SUB+I+sizeop(1):
+		case SUB+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+
+			if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_ADDRFP(p->kids[1]) || IS_LEFT_ADDRLP(p->kids[1]))) {
+				int off = (int)const_val(LEFT_CHILD(p->kids[1]));
+																comment(STR("Sub (mem) from %s into %s", lreg[sreg1], lreg[dreg]));
+																offsethl(off + framesize + argstack);
+																op2("LD", "A", lreg[sreg1]);
+																op1("SUB", "(HL)");
+																op2("LD", lreg[dreg], "A");
+			} else if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_CONST(p->kids[1]) || IS_LEFT_ADDRGP(p->kids[1]))) {
+				char *addr = LEFT_VAL(p->kids[1]);
+																comment(STR("Sub (mem) from %s into %s", lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", STR("(%s)", addr));
+																op1("SUB", "(HL)");
+																op2("LD", lreg[dreg], "A");
+			} else if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+				int n = (int)const_val(RIGHT_CHILD(p));
+																comment(STR("Sub %s from %s into %s", val, lreg[sreg1], lreg[dreg]));
+				if(n >= 0 && n <= 2) {
+					if(sreg1 != dreg)
+																op2("LD", lreg[dreg], lreg[sreg1]);
+					while(n--)
+																op1("DEC", lreg[dreg]);
+				} else if(n >= -2 && n <= -1) {
+					if(sreg1 != dreg)
+																op2("LD", lreg[dreg], lreg[sreg1]);
+					while(n++)
+																op1("INC", lreg[dreg]);
+				} else {
+																op2("LD", "A", lreg[sreg1]);
+																op1("SUB", STR("#<%s", val));
+																op2("LD", lreg[dreg], "A");
+				}
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				if(IS_RIGHT_INDIR(p)) {
+																comment(STR("Sub (mem) from %s into %s", lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", STR("(%s)", intreg[sreg2]->x.name));
+																op1("SUB", "(HL)");
+																op2("LD", lreg[dreg], "A");
+				} else {
+																comment(STR("Sub %s from %s into %s", lreg[sreg2], lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", lreg[sreg1]);
+																op1("SUB", lreg[sreg2]);
+																op2("LD", lreg[dreg], "A");
+				}
+			}
+			break;
+		}
+		case SUB+I+sizeop(2):
+		case SUB+U+sizeop(2):
+		case SUB+P+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			char *src1 = intreg[sreg1]->x.name;
+			assert(opsize(p->x.kids[0]->op) == 2);
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+				int n = (int)const_val(RIGHT_CHILD(p));
+																comment(STR("Sub %s from %s into %s", val, src1, dst));
+				if(n >= 0 && n <= 3) {
+					if(sreg1 != dreg) {
+																op2("LD", hreg[dreg], hreg[sreg1]);
+																op2("LD", lreg[dreg], lreg[sreg1]);
+					}
+					while(n--)
+																op1("DEC", dst);
+				} else if(n >= -3 && n <= -1) {
+					if(sreg1 != dreg) {
+																op2("LD", hreg[dreg], hreg[sreg1]);
+																op2("LD", lreg[dreg], lreg[sreg1]);
+					}
+					while(n++)
+																op1("INC", dst);
+				} else {
+																op2("LD", "A", lreg[sreg1]);
+																op1("SUB", STR("#<%s", val));
+																op2("LD", lreg[dreg], "A");
+																op2("LD", "A", hreg[sreg1]);
+																op1("SBC", STR("#>%s", val));
+																op2("LD", hreg[dreg], "A");
+				}
+			} else if(IS_RIGHT_ADDRGP(p)) {
+				char *val = RIGHT_VAL(p);
+																comment(STR("Sub %s from %s into %s", val, src1, dst));
+																op2("LD", "HL", STR("#%s", val));
+																op2("LD", "A", lreg[sreg1]);
+																op1("SUB", "L");
+																op2("LD", lreg[dreg], "A");
+																op2("LD", "A", hreg[sreg1]);
+																op1("SBC", "H");
+																op2("LD", hreg[dreg], "A");
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				char *src2 = intreg[sreg2]->x.name;
+				assert(opsize(p->x.kids[1]->op) == 2);
+																comment(STR("Sub %s from %s into %s", src2, src1, dst));
+																op2("LD", "A", lreg[sreg1]);
+																op1("SUB", lreg[sreg2]);
+																op2("LD", lreg[dreg], "A");
+																op2("LD", "A", hreg[sreg1]);
+																op1("SBC", hreg[sreg2]);
+																op2("LD", hreg[dreg], "A");
+			}
+			break;
+		}
+		case BAND+I+sizeop(1): 
+		case BAND+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_ADDRFP(p->kids[1]) || IS_LEFT_ADDRLP(p->kids[1]))) {
+				int off = (int)const_val(LEFT_CHILD(p->kids[1]));
+																comment(STR("And (mem) and %s into %s", lreg[sreg1], lreg[dreg]));
+																offsethl(off + framesize + argstack);
+																op2("LD", "A", lreg[sreg1]);
+																op1("AND", "(HL)");
+																op2("LD", lreg[dreg], "A");
+			} else if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_CONST(p->kids[1]) || IS_LEFT_ADDRGP(p->kids[1]))) {
+				char *addr = LEFT_VAL(p->kids[1]);
+																comment(STR("And (mem) and %s into %s", lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", STR("(%s)", addr));
+																op1("AND", "(HL)");
+																op2("LD", lreg[dreg], "A");
+			} else if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+																comment(STR("And %s and %s into %s", val, lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", lreg[sreg1]);
+																op1("AND", STR("#<%s", val));
+																op2("LD", lreg[dreg], "A");
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				if(IS_RIGHT_INDIR(p)) {
+																comment(STR("And (mem) and %s into %s", lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", STR("(%s)", intreg[sreg2]->x.name));
+																op1("AND", "(HL)");
+																op2("LD", lreg[dreg], "A");
+				} else {
+																comment(STR("And %s and %s into %s", lreg[sreg2], lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", lreg[sreg1]);
+																op1("AND", lreg[sreg2]);
+																op2("LD", lreg[dreg], "A");
+				}
+			}
+			break;
+		}
+		case BAND+I+sizeop(2): 
+		case BAND+U+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			char *src1 = intreg[sreg1]->x.name;
+			assert(opsize(p->x.kids[0]->op) == 2);
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+																comment(STR("And %s and %s into %s", val, src1, dst));
+																op2("LD", "A", lreg[sreg1]);
+																op1("AND", STR("#<%s", val));
+																op2("LD", lreg[dreg], "A");
+																op2("LD", "A", hreg[sreg1]);
+																op1("AND", STR("#>%s", val));
+																op2("LD", hreg[dreg], "A");
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				char *src2 = intreg[sreg2]->x.name;
+				assert(opsize(p->x.kids[1]->op) == 2);
+																comment(STR("And %s and %s into %s", src2, src1, dst));
+																op2("LD", "A", lreg[sreg1]);
+																op1("AND", lreg[sreg2]);
+																op2("LD", lreg[dreg], "A");
+																op2("LD", "A", hreg[sreg1]);
+																op1("AND", hreg[sreg2]);
+																op2("LD", hreg[dreg], "A");
+			}
+			break;
+		}
+		case BOR+I+sizeop(1): 
+		case BOR+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_ADDRFP(p->kids[1]) || IS_LEFT_ADDRLP(p->kids[1]))) {
+				int off = (int)const_val(LEFT_CHILD(p->kids[1]));
+																comment(STR("Or (mem) and %s into %s", lreg[sreg1], lreg[dreg]));
+																offsethl(off + framesize + argstack);
+																op2("LD", "A", lreg[sreg1]);
+																op1("OR", "(HL)");
+																op2("LD", lreg[dreg], "A");
+			} else if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_CONST(p->kids[1]) || IS_LEFT_ADDRGP(p->kids[1]))) {
+				char *addr = LEFT_VAL(p->kids[1]);
+																comment(STR("Or (mem) and %s into %s", lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", STR("(%s)", addr));
+																op1("OR", "(HL)");
+																op2("LD", lreg[dreg], "A");
+			} else if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+																comment(STR("Or %s and %s into %s", val, lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", lreg[sreg1]);
+																op1("OR", STR("#<%s", val));
+																op2("LD", lreg[dreg], "A");
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				if(IS_RIGHT_INDIR(p)) {
+																comment(STR("Or (mem) and %s into %s", lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", STR("(%s)", intreg[sreg2]->x.name));
+																op1("OR", "(HL)");
+																op2("LD", lreg[dreg], "A");
+				} else {
+																comment(STR("Or %s and %s into %s", lreg[sreg2], lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", lreg[sreg1]);
+																op1("OR", lreg[sreg2]);
+																op2("LD", lreg[dreg], "A");
+				}
+			}
+			break;
+		}
+		case BOR+I+sizeop(2): 
+		case BOR+U+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			char *src1 = intreg[sreg1]->x.name;
+			assert(opsize(p->x.kids[0]->op) == 2);
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+																comment(STR("Or %s and %s into %s", val, src1, dst));
+																op2("LD", "A", lreg[sreg1]);
+																op1("OR", STR("#<%s", val));
+																op2("LD", lreg[dreg], "A");
+																op2("LD", "A", hreg[sreg1]);
+																op1("OR", STR("#>%s", val));
+																op2("LD", hreg[dreg], "A");
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				char *src2 = intreg[sreg2]->x.name;
+				assert(opsize(p->x.kids[1]->op) == 2);
+																comment(STR("Or %s and %s into %s", src2, src1, dst));
+																op2("LD", "A", lreg[sreg1]);
+																op1("OR", lreg[sreg2]);
+																op2("LD", lreg[dreg], "A");
+																op2("LD", "A", hreg[sreg1]);
+																op1("OR", hreg[sreg2]);
+																op2("LD", hreg[dreg], "A");
+			}
+			break;
+		}
+		case BXOR+I+sizeop(1): 
+		case BXOR+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_ADDRFP(p->kids[1]) || IS_LEFT_ADDRLP(p->kids[1]))) {
+				int off = (int)const_val(LEFT_CHILD(p->kids[1]));
+																comment(STR("Xor (mem) and %s into %s", lreg[sreg1], lreg[dreg]));
+																offsethl(off + framesize + argstack);
+																op2("LD", "A", lreg[sreg1]);
+																op1("XOR", "(HL)");
+																op2("LD", lreg[dreg], "A");
+			} else if(IS_RIGHT_INDIR(p) &&
+				(IS_LEFT_CONST(p->kids[1]) || IS_LEFT_ADDRGP(p->kids[1]))) {
+				char *addr = LEFT_VAL(p->kids[1]);
+																comment(STR("Xor (mem) and %s into %s", lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", STR("(%s)", addr));
+																op1("XOR", "(HL)");
+																op2("LD", lreg[dreg], "A");
+			} else if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+																comment(STR("Xor %s and %s into %s", val, lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", lreg[sreg1]);
+																op1("XOR", STR("#<%s", val));
+																op2("LD", lreg[dreg], "A");
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				if(IS_RIGHT_INDIR(p)) {
+																comment(STR("Xor (mem) and %s into %s", lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", STR("(%s)", intreg[sreg2]->x.name));
+																op1("XOR", "(HL)");
+																op2("LD", lreg[dreg], "A");
+				} else {
+																comment(STR("Xor %s and %s into %s", lreg[sreg2], lreg[sreg1], lreg[dreg]));
+																op2("LD", "A", lreg[sreg1]);
+																op1("XOR", lreg[sreg2]);
+																op2("LD", lreg[dreg], "A");
+				}
+			}
+			break;
+		}
+		case BXOR+I+sizeop(2): 
+		case BXOR+U+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			char *src1 = intreg[sreg1]->x.name;
+			assert(opsize(p->x.kids[0]->op) == 2);
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+																comment(STR("Xor %s and %s into %s", val, src1, dst));
+																op2("LD", "A", lreg[sreg1]);
+																op1("XOR", STR("#<%s", val));
+																op2("LD", lreg[dreg], "A");
+																op2("LD", "A", hreg[sreg1]);
+																op1("XOR", STR("#>%s", val));
+																op2("LD", hreg[dreg], "A");
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				char *src2 = intreg[sreg2]->x.name;
+				assert(opsize(p->x.kids[1]->op) == 2);
+																comment(STR("Xor %s and %s into %s", src2, src1, dst));
+																op2("LD", "A", lreg[sreg1]);
+																op1("XOR", lreg[sreg2]);
+																op2("LD", lreg[dreg], "A");
+																op2("LD", "A", hreg[sreg1]);
+																op1("XOR", hreg[sreg2]);
+																op2("LD", hreg[dreg], "A");
+			}
+			break;
+		}
+		case BCOM+I+sizeop(1): 
+		case BCOM+U+sizeop(1): {
+			int dreg = REG(p);
+			if(IS_LEFT_INDIR(p) &&
+				(IS_LEFT_ADDRFP(p->kids[0]) || IS_LEFT_ADDRLP(p->kids[0]))) {
+				int off = (int)const_val(LEFT_CHILD(p->kids[0]));
+																comment(STR("Complement (mem) into %s", lreg[dreg]));
+																offsethl(off + framesize + argstack);
+																op2("LD", "A", "(HL)");
+																op0("CPL");
+																op2("LD", lreg[dreg], "A");
+			} else if(IS_LEFT_INDIR(p) &&
+				(IS_LEFT_CONST(p->kids[0]) || IS_LEFT_ADDRGP(p->kids[0]))) {
+				char *addr = LEFT_VAL(p->kids[0]);
+																comment(STR("Complement (mem) into %s", lreg[dreg]));
+																op2("LD", "A", STR("(%s)", addr));
+																op0("CPL");
+																op2("LD", lreg[dreg], "A");
+			} else {
+				int sreg = LEFT_X_CHILD_REG(p);
+																comment(STR("Complement %s into %s", lreg[sreg], lreg[dreg]));
+																op2("LD", "A", lreg[sreg]);
+																op0("CPL");
+																op2("LD", lreg[dreg], "A");
+			}
+			break;
+		}
+		case BCOM+I+sizeop(2): 
+		case BCOM+U+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int sreg = LEFT_X_CHILD_REG(p);
+			char *src = intreg[sreg]->x.name;
+																comment(STR("Complement %s into %s", dst, src));
+																op2("LD", "A", lreg[sreg]);
+																op0("CPL");
+																op2("LD", lreg[dreg], "A");
+																op2("LD", "A", hreg[sreg]);
+																op0("CPL");
+																op2("LD", hreg[dreg], "A");
+			break;
+		}
+		case NEG+I+sizeop(1): {
+			int dreg = REG(p);
+			if(IS_LEFT_INDIR(p) &&
+				(IS_LEFT_ADDRFP(p->kids[0]) || IS_LEFT_ADDRLP(p->kids[0]))) {
+				int off = (int)const_val(LEFT_CHILD(p->kids[0]));
+																comment(STR("Negate (mem) into %s", lreg[dreg]));
+																offsethl(off + framesize + argstack);
+																op1("XOR", "A");
+																op1("SUB", "(HL)");
+																op2("LD", lreg[dreg], "A");
+			} else if(IS_LEFT_INDIR(p) &&
+				(IS_LEFT_CONST(p->kids[0]) || IS_LEFT_ADDRGP(p->kids[0]))) {
+				char *addr = LEFT_VAL(p->kids[0]);
+																comment(STR("Negate (mem) into %s", lreg[dreg]));
+																op2("LD", "A", STR("(%s)", addr));
+																op0("CPL");
+																op1("INC", "A");
+																op2("LD", lreg[dreg], "A");
+			} else {
+				int sreg = LEFT_X_CHILD_REG(p);
+																comment(STR("Negate %s into %s", lreg[sreg], lreg[dreg]));
+																op1("XOR", "A");
+																op1("SUB", lreg[sreg]);
+																op2("LD", lreg[dreg], "A");
+			}
+			break;
+		}
+		case NEG+I+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int sreg = LEFT_X_CHILD_REG(p);
+			char *src = intreg[sreg]->x.name;
+																comment(STR("Negate %s into %s", dst, src));
+																op1("XOR", "A");
+																op1("SUB", lreg[sreg]);
+																op2("LD", lreg[dreg], "A");
+																op2("LD", "A", "#0");					/* LD does not change the flags! */
+																op1("SBC", hreg[sreg]);
+																op2("LD", hreg[dreg], "A");
+			break;
+		}
+		case EQ+I+sizeop(1):
+		case EQ+U+sizeop(1):
+		case NE+I+sizeop(1):
+		case NE+U+sizeop(1): {
+			char *jmp = p->syms[0]->x.name;
+			if(IS_LEFT_INDIR(p)) {
+				char *val;
+				assert(IS_RIGHT_CONST(p));
+				val = RIGHT_VAL(p);
+				if(IS_LEFT_ADDRFP(p->kids[0]) || IS_LEFT_ADDRLP(p->kids[0])) {
+					int off = (int)const_val(LEFT_CHILD(p->kids[0]));
+																comment(STR("Compare EQ/NE (mem) and %s", val));
+																offsethl(off + framesize + argstack);
+																load_acc(const_val(RIGHT_CHILD(p)), LOW, 0);
+																op1("CP", "(HL)");
+																op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+				} else if(IS_LEFT_CONST(p->kids[0]) || IS_LEFT_ADDRGP(p->kids[0])) {
+					char *addr = LEFT_VAL(p->kids[0]);
+																comment(STR("Compare EQ/NE (mem) and %s", val));
+																op2("LD", "A", STR("(%s)", addr));
+																op1("CP", STR("#<%s", val));
+																op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+				} else {
+					int sreg = LEFT_REG(p);
+																comment(STR("Compare EQ/NE (mem) and %s", val));
+																op2("LD", "A", STR("(%s)", intreg[sreg]->x.name));
+																op1("CP", STR("#<%s", val));
+																op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+				}
+			} else {
+				int sreg = LEFT_X_CHILD_REG(p);
+				if(IS_RIGHT_INDIR(p) &&
+					(IS_LEFT_ADDRFP(p->kids[1]) || IS_LEFT_ADDRLP(p->kids[1]))) {
+					int off = (int)const_val(LEFT_CHILD(p->kids[1]));
+																comment(STR("Compare EQ/NE %s and (mem)", lreg[sreg]));
+																offsethl(off + framesize + argstack);
+																op2("LD", "A", lreg[sreg]);
+																op1("CP", "(HL)");
+																op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+				} else if(IS_RIGHT_INDIR(p) &&
+					(IS_LEFT_CONST(p->kids[1]) || IS_LEFT_ADDRGP(p->kids[1]))) {
+					char *addr = LEFT_VAL(p->kids[1]);
+																comment(STR("Compare EQ/NE %s and (mem)", lreg[sreg]));
+																op2("LD", "A", STR("(%s)", addr));
+																op1("CP", lreg[sreg]);
+																op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+				} else if(IS_RIGHT_CONST(p)) {
+					char *val = RIGHT_VAL(p);
+																comment(STR("Compare EQ/NE %s and %s", lreg[sreg], val));
+																op2("LD", "A", lreg[sreg]);
+																op1("CP", STR("#<%s", val));
+																op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+				} else {
+					int sreg2 = RIGHT_REG(p);
+					if(IS_RIGHT_INDIR(p)) {
+																comment(STR("Compare EQ/NE %s and (mem)", lreg[sreg]));
+																op2("LD", "A", STR("(%s)", intreg[sreg2]->x.name));
+																op1("CP", lreg[sreg]);
+																op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+					} else {
+																comment(STR("Compare EQ/NE %s and %s", lreg[sreg], lreg[sreg2]));
+																op2("LD", "A", lreg[sreg2]);
+																op1("CP", lreg[sreg]);
+																op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+					}
+				}
+			}
+			break;
+		}
+		case EQ+I+sizeop(2):
+		case EQ+U+sizeop(2):
+		case NE+I+sizeop(2):
+		case NE+U+sizeop(2): {
+			int lab = genlabel(1);
+			int sreg = LEFT_X_CHILD_REG(p);
+			char *src1 = intreg[sreg]->x.name;
+			char *jmp = p->syms[0]->x.name;
+			assert(opsize(p->x.kids[0]->op) == 2);
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+																comment(STR("Compare EQ/NE %s and %s", src1, val));
+																op2("LD", "A", lreg[sreg]);
+																op1("CP", STR("#<%s", val));
+				if(generic(p->op) == EQ) {
+																op2("JR", "NZ", STR(".L%d", lab));
+				} else {
+																op2("JP", "NZ", jmp);
+				}
+																op2("LD", "A", hreg[sreg]);
+																op1("CP", STR("#>%s", val));
+																op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+																label(STR(".L%d:", lab));
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				char *src2 = intreg[sreg2]->x.name;
+				assert(opsize(p->x.kids[1]->op) == 2);
+																comment(STR("Compare EQ/NE %s and %s", src1, src2));
+																op2("LD", "A", lreg[sreg2]);
+																op1("CP", lreg[sreg]);
+				if(generic(p->op) == EQ) {
+																op2("JR", "NZ", STR(".L%d", lab));
+				} else {
+																op2("JP", "NZ", jmp);
+				}
+																op2("LD", "A", hreg[sreg2]);
+																op1("CP", hreg[sreg]);
+																op2("JP", (generic(p->op) == EQ ? "Z" : "NZ"), jmp);
+																label(STR(".L%d:", lab));
+			}
+			break;
+		}
+		case GE+I+sizeop(1):
+		case GE+U+sizeop(1):
+		case LT+I+sizeop(1):
+		case LT+U+sizeop(1): {
+			char *jmp = p->syms[0]->x.name;
+			if(IS_LEFT_INDIR(p)) {
+				char *val;
+				int n;
+				assert(IS_RIGHT_CONST(p));
+				val = RIGHT_VAL(p);
+				n = (int)const_val(RIGHT_CHILD(p));
+				if(IS_LEFT_ADDRFP(p->kids[0]) || IS_LEFT_ADDRLP(p->kids[0])) {
+					int off = (int)const_val(LEFT_CHILD(p->kids[0]));
+																comment(STR("Compare GE/LT (mem) and %s", val));
+					if(optype(p->op) == I) {
+																offsethl(off + framesize + argstack);
+																op2("LD", "A", "(HL)");
+																op1("ADD", "#0x80");
+																op1("CP", STR("#%d", n^0x80));
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+					} else {
+																offsethl(off + framesize + argstack);
+																op2("LD", "A", "(HL)");
+																op1("CP", STR("#<%s", val));
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+					}
+				} else if(IS_LEFT_CONST(p->kids[0]) || IS_LEFT_ADDRGP(p->kids[0])) {
+					char *addr = LEFT_VAL(p->kids[0]);
+																comment(STR("Compare GE/LT (mem) and %s", val));
+					if(optype(p->op) == I) {
+																op2("LD", "A", STR("(%s)", addr));
+																op1("ADD", "#0x80");
+																op1("CP", STR("#%d", n^0x80));
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+					} else {
+																op2("LD", "A", STR("(%s)", addr));
+																op1("CP", STR("#<%s", val));
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+					}
+				} else {
+					int sreg = LEFT_REG(p);
+																comment(STR("Compare GE/LT (mem) and %s", val));
+					if(optype(p->op) == I) {
+																op2("LD", "A", STR("(%s)", intreg[sreg]->x.name));
+																op1("ADD", "#0x80");
+																op1("CP", STR("#%d", n^0x80));
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+					} else {
+																op2("LD", "A", STR("(%s)", intreg[sreg]->x.name));
+																op1("CP", STR("#<%s", val));
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+					}
+				}
+			} else {
+				int sreg = LEFT_X_CHILD_REG(p);
+				if(IS_RIGHT_INDIR(p) &&
+					(IS_LEFT_ADDRFP(p->kids[1]) || IS_LEFT_ADDRLP(p->kids[1]))) {
+					int off = (int)const_val(LEFT_CHILD(p->kids[1]));
+																comment(STR("Compare GE/LT %s and (mem)", lreg[sreg]));
+					if(optype(p->op) == I) {
+																offsethl(off + framesize + argstack);
+																op2("LD", "A", "(HL)");
+																op1("ADD", "#0x80");
+																op2("LD", "L", "A");
+																op2("LD", "A", lreg[sreg]);
+																op1("ADD", "#0x80");
+																op1("CP", "L");
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+					} else {
+																offsethl(off + framesize + argstack);
+																op2("LD", "A", lreg[sreg]);
+																op1("CP", "(HL)");
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+					}
+				} else if(IS_RIGHT_INDIR(p) &&
+					(IS_LEFT_CONST(p->kids[1]) || IS_LEFT_ADDRGP(p->kids[1]))) {
+					char *addr = LEFT_VAL(p->kids[1]);
+																comment(STR("Compare GE/LT %s and (mem)", lreg[sreg]));
+					if(optype(p->op) == I) {
+																op2("LD", "A", STR("(%s)", addr));
+																op1("ADD", "#0x80");
+																op2("LD", "L", "A");
+																op2("LD", "A", lreg[sreg]);
+																op1("ADD", "#0x80");
+																op1("CP", "L");
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+					} else {
+																op2("LD", "HL", STR("#%s", addr));
+																op2("LD", "A", lreg[sreg]);
+																op1("CP", "(HL)");
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+					}
+				} else if(IS_RIGHT_CONST(p)) {
+					char *val = RIGHT_VAL(p);
+					int n = (int)const_val(RIGHT_CHILD(p));
+																comment(STR("Compare GE/LT %s and %s", lreg[sreg], val));
+					if(optype(p->op) == I) {
+																op2("LD", "A", lreg[sreg]);
+																op1("ADD", "#0x80");
+																op1("CP", STR("#%d", n^0x80));
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+					} else {
+																op2("LD", "A", lreg[sreg]);
+																op1("CP", STR("#<%s", val));
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+					}
+				} else {
+					int sreg2 = RIGHT_REG(p);
+					char *src2 = intreg[sreg2]->x.name;
+					if(IS_RIGHT_INDIR(p)) {
+																comment(STR("Compare GE/LT %s and (mem)", lreg[sreg]));
+						if(optype(p->op) == I) {
+																op2("LD", "A", STR("(%s)", src2));
+																op1("ADD", "#0x80");
+																op2("LD", "L", "A");
+																op2("LD", "A", lreg[sreg]);
+																op1("ADD", "#0x80");
+																op1("CP", "L");
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+						} else {
+							if(sreg2 != HL) {
+																op2("LD", "H", hreg[sreg2]);
+																op2("LD", "L", lreg[sreg2]);
+							}
+																op2("LD", "A", lreg[sreg]);
+																op1("CP", "(HL)");
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+						}
+					} else {
+																comment(STR("Compare GE/LT %s and %s", lreg[sreg], lreg[sreg2]));
+						if(optype(p->op) == I) {
+																op2("LD", "A", lreg[sreg2]);
+																op1("ADD", "#0x80");
+																op2("LD", "L", "A");
+																op2("LD", "A", lreg[sreg]);
+																op1("ADD", "#0x80");
+																op1("CP", "L");
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+						} else {
+																op2("LD", "A", lreg[sreg]);
+																op1("CP", lreg[sreg2]);
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+						}
+					}
+				}
+			}
+			break;
+		}
+		case GE+I+sizeop(2):
+		case GE+U+sizeop(2):
+		case LT+I+sizeop(2):
+		case LT+U+sizeop(2): {
+			int lab = genlabel(1);
+			int sreg = LEFT_X_CHILD_REG(p);
+			char *jmp = p->syms[0]->x.name;
+			char *src1 = intreg[sreg]->x.name;
+			assert(opsize(p->x.kids[0]->op) == 2);
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+				long n = const_val(RIGHT_CHILD(p));
+																comment(STR("Compare GE/LT %s and %s", src1, val));
+				if(optype(p->op) == I) {
+																op2("LD", "A", hreg[sreg]);
+																op1("ADD", "#0x80");
+																op1("CP", STR("#%d", ((n>>8)&0xFF)^0x80));
+				} else {
+																op2("LD", "A", hreg[sreg]);
+																op1("CP", STR("#%d", (n>>8)&0xFF));
+				}
+																op2("JR", "NZ", STR(".L%d", lab));
+																op2("LD", "A", lreg[sreg]);
+																op1("CP", STR("#%d", n&0xFF));
+																label(STR(".L%d:", lab));
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				char *src2 = intreg[sreg2]->x.name;
+				assert(opsize(p->x.kids[1]->op) == 2);
+																comment(STR("Compare GE/LT %s and %s", src1, src2));
+				if(optype(p->op) == I) {
+																op2("LD", "A", hreg[sreg2]);
+																op1("ADD", "#0x80");
+																op2("LD", "L", "A");
+																op2("LD", "A", hreg[sreg]);
+																op1("ADD", "#0x80");
+																op1("CP", "L");
+				} else {
+																op2("LD", "A", hreg[sreg]);
+																op1("CP", hreg[sreg2]);
+				}
+																op2("JR", "NZ", STR(".L%d", lab));
+																op2("LD", "A", lreg[sreg]);
+																op1("CP", lreg[sreg2]);
+																label(STR(".L%d:", lab));
+																op2("JP", (generic(p->op) == GE ? "NC" : "C"), jmp);
+			}
+			break;
+		}
+
+#define GELT_TO_LEGT		if(generic(p->op) == GT) { \
+								int lab = genlabel(1); \
+																op2("JR", "Z", STR(".L%d", lab)); \
+																op2("JP", "NC", jmp); \
+																label(STR(".L%d:", lab)); \
+							} else { \
+																op2("JP", "C", jmp); \
+																op2("JP", "Z", jmp); \
+							}
+
+
+		case LE+I+sizeop(1):
+		case LE+U+sizeop(1):
+		case GT+I+sizeop(1):
+		case GT+U+sizeop(1): {
+			char *jmp = p->syms[0]->x.name;
+			if(IS_LEFT_INDIR(p)) {
+				char *val;
+				int n;
+				assert(IS_RIGHT_CONST(p));
+				val = RIGHT_VAL(p);
+				n = (int)const_val(RIGHT_CHILD(p));
+				if(IS_LEFT_ADDRFP(p->kids[0]) || IS_LEFT_ADDRLP(p->kids[0])) {
+					int off = (int)const_val(LEFT_CHILD(p->kids[0]));
+																comment(STR("Compare LE/GT (mem) and %s", val));
+					if(optype(p->op) == I) {
+																offsethl(off + framesize + argstack);
+
+																op2("LD", "A", "(HL)");
+																op1("ADD", "#0x80");
+																op1("CP", STR("#%d", n^0x80));
+																GELT_TO_LEGT;
+					} else {
+																offsethl(off + framesize + argstack);
+																load_acc(n, LOW, 0);
+																op1("CP", "(HL)");
+																op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+					}
+				} else if(IS_LEFT_CONST(p->kids[0]) || IS_LEFT_ADDRGP(p->kids[0])) {
+					char *addr = LEFT_VAL(p->kids[0]);
+																comment(STR("Compare LE/GT (mem) and %s", val));
+					if(optype(p->op) == I) {
+																op2("LD", "A", STR("(%s)", addr));
+																op1("ADD", "#0x80");
+																op1("CP", STR("#%d", n^0x80));
+																GELT_TO_LEGT;
+					} else {
+																op2("LD", "A", STR("(%s)", addr));
+																op1("CP", STR("#<%s", val));
+																GELT_TO_LEGT;
+					}
+				} else {
+					int sreg = LEFT_REG(p);
+																comment(STR("Compare LE/GT (mem) and %s", val));
+					if(optype(p->op) == I) {
+																op2("LD", "A", STR("(%s)", intreg[sreg]->x.name));
+																op1("ADD", "#0x80");
+																op1("CP", STR("#%d", n^0x80));
+																GELT_TO_LEGT;
+					} else if(sreg == HL) {
+																load_acc(n, LOW, 0);
+																op1("CP", "(HL)");
+																op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+					} else {
+																op2("LD", "A", STR("(%s)", intreg[sreg]->x.name));
+																op1("CP", STR("#<%s", val));
+																GELT_TO_LEGT;
+					}
+				}
+			} else {
+				int sreg = LEFT_X_CHILD_REG(p);
+				if(IS_RIGHT_INDIR(p) &&
+					(IS_LEFT_ADDRFP(p->kids[1]) || IS_LEFT_ADDRLP(p->kids[1]))) {
+					int off = (int)const_val(LEFT_CHILD(p->kids[1]));
+																comment(STR("Compare LE/GT %s and (mem)", lreg[sreg]));
+					if(optype(p->op) == I) {
+																offsethl(off + framesize + argstack);
+																op2("LD", "H", "(HL)");
+																op2("LD", "A", lreg[sreg]);
+																op1("ADD", "#0x80");
+																op2("LD", "L", "A");
+																op2("LD", "A", "H");
+																op1("ADD", "#0x80");
+																op1("CP", "L");
+																op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+					} else {
+																offsethl(off + framesize + argstack);
+																op2("LD", "A", "(HL)");
+																op1("CP", lreg[sreg]);
+																op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+					}
+				} else if(IS_RIGHT_INDIR(p) &&
+					(IS_LEFT_CONST(p->kids[1]) || IS_LEFT_ADDRGP(p->kids[1]))) {
+					char *addr = LEFT_VAL(p->kids[1]);
+																comment(STR("Compare LE/GT %s and (mem)", lreg[sreg]));
+					if(optype(p->op) == I) {
+																op2("LD", "A", lreg[sreg]);
+																op1("ADD", "#0x80");
+																op2("LD", "L", "A");
+																op2("LD", "A", STR("(%s)", addr));
+																op1("ADD", "#0x80");
+																op1("CP", "L");
+																op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+					} else {
+																op2("LD", "A", STR("(%s)", addr));
+																op1("CP", lreg[sreg]);
+																op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+					}
+				} else if(IS_RIGHT_CONST(p)) {
+					char *val = RIGHT_VAL(p);
+					int n = (int)const_val(RIGHT_CHILD(p));
+																comment(STR("Compare LE/GT %s and %s", lreg[sreg], val));
+					if(optype(p->op) == I) {
+																op2("LD", "A", lreg[sreg]);
+																op1("ADD", "#0x80");
+																op1("CP", STR("#%d", n^0x80));
+																GELT_TO_LEGT;
+					} else {
+																load_acc(n, LOW, 0);
+																op1("CP", lreg[sreg]);
+																op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+					}
+				} else {
+					int sreg2 = RIGHT_REG(p);
+					char *src2 = intreg[sreg2]->x.name;
+					if(IS_RIGHT_INDIR(p)) {
+																comment(STR("Compare LE/GT %s and (mem)", lreg[sreg]));
+						if(optype(p->op) == I) {
+																op2("LD", "A", STR("(%s)", src2));
+																op1("ADD", "#0x80");
+																op2("LD", "L", "A");
+																op2("LD", "A", lreg[sreg]);
+																op1("ADD", "#0x80");
+																op1("CP", "L");
+																GELT_TO_LEGT;
+						} else {
+																op2("LD", "A", STR("(%s)", src2));
+																op1("CP", lreg[sreg]);
+																op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+						}
+					} else {
+																comment(STR("Compare LE/GT %s and %s", lreg[sreg], lreg[sreg2]));
+						if(optype(p->op) == I) {
+																op2("LD", "A", lreg[sreg]);
+																op1("ADD", "#0x80");
+																op2("LD", "L", "A");
+																op2("LD", "A", lreg[sreg2]);
+																op1("ADD", "#0x80");
+																op1("CP", "L");
+																op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+						} else {
+																op2("LD", "A", lreg[sreg2]);
+																op1("CP", lreg[sreg]);
+																op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+						}
+					}
+				}
+			}
+			break;
+		}
+		case LE+I+sizeop(2):
+		case LE+U+sizeop(2):
+		case GT+I+sizeop(2):
+		case GT+U+sizeop(2): {
+			int lab = genlabel(1);
+			int sreg = LEFT_X_CHILD_REG(p);
+			char *jmp = p->syms[0]->x.name;
+			char *src1 = intreg[sreg]->x.name;
+			assert(opsize(p->x.kids[0]->op) == 2);
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+				long n = const_val(RIGHT_CHILD(p));
+																comment(STR("Compare LE/GT %s and %s", src1, val));
+				if(optype(p->op) == I) {
+																op2("LD", "A", hreg[sreg]);
+																op1("ADD", "#0x80");
+																op2("LD", "L", "A");
+																load_acc(n^0x8000, HIGH, 0);
+																op1("CP", "L");
+				} else {
+																load_acc(n, HIGH, 0);
+																op1("CP", hreg[sreg]);
+				}
+																op2("JR", "NZ", STR(".L%d", lab));
+																load_acc(n, LOW, 0);
+																op1("CP", lreg[sreg]);
+																label(STR(".L%d:", lab));
+																op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+			} else {
+				int sreg2 = RIGHT_REG(p);
+				char *src2 = intreg[sreg2]->x.name;
+				assert(opsize(p->x.kids[1]->op) == 2);
+																comment(STR("Compare LE/GT %s and %s", src1, src2));
+				if(optype(p->op) == I) {
+																op2("LD", "A", hreg[sreg]);
+																op1("ADD", "#0x80");
+																op2("LD", "L", "A");
+																op2("LD", "A", hreg[sreg2]);
+																op1("ADD", "#0x80");
+																op1("CP", "L");
+				} else {
+																op2("LD", "A", hreg[sreg2]);
+																op1("CP", hreg[sreg]);
+				}
+																op2("JR", "NZ", STR(".L%d", lab));
+																op2("LD", "A", lreg[sreg2]);
+																op1("CP", lreg[sreg]);
+																label(STR(".L%d:", lab));
+																op2("JP", (generic(p->op) == LE ? "NC" : "C"), jmp);
+			}
+			break;
+		}
+		case LSH+I+sizeop(1):
+		case LSH+U+sizeop(1):
+		case RSH+I+sizeop(1):
+		case RSH+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg = LEFT_X_CHILD_REG(p);
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+				int n = (int)const_val(RIGHT_CHILD(p));
+																comment(STR("Left/right shift %s by %s into %s", lreg[sreg], val, lreg[dreg]));
+				if(dreg != sreg)
+																op2("LD", lreg[dreg], lreg[sreg]);
+				while(n-- > 0) {
+					if(generic(p->op) == LSH)
+																op1("SLA", lreg[dreg]);
+					else if(optype(p->op) == I)
+																op1("SRA", lreg[dreg]);
+					else
+																op1("SRL", lreg[dreg]);
+				}
+			} else {
+				int shift = RIGHT_REG(p);
+																comment(STR("Left/right shift %s by %s into %s", lreg[sreg], lreg[shift], lreg[dreg]));
+				if(generic(p->op) == LSH)
+																op1("CALL", ".asl8");
+				else if(optype(p->op) == I)
+																op1("CALL", ".asr8");
+				else
+																op1("CALL", ".lsr8");
+			}
+			break;
+		}
+		case LSH+I+sizeop(2):
+		case LSH+U+sizeop(2):
+		case RSH+I+sizeop(2):
+		case RSH+U+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int sreg = LEFT_X_CHILD_REG(p);
+			char *src = intreg[sreg]->x.name;
+			assert(opsize(p->x.kids[0]->op) == 2);
+			if(IS_RIGHT_CONST(p)) {
+				char *val = RIGHT_VAL(p);
+				int n = (int)const_val(RIGHT_CHILD(p));
+																comment(STR("Left/right shift %s by %s into %s", src, val, dst));
+				if(dreg != sreg) {
+																op2("LD", hreg[dreg], hreg[sreg]);
+																op2("LD", lreg[dreg], lreg[sreg]);
+				}
+				while(n-- > 0) {
+					if(generic(p->op) == LSH){
+																op1("SLA", lreg[dreg]);
+																op1("RL", hreg[dreg]);
+					} else if(optype(p->op) == I) {
+																op1("SRA", hreg[dreg]);
+																op1("RR", lreg[dreg]);
+					} else {
+																op1("SRL", hreg[dreg]);
+																op1("RR", lreg[dreg]);
+					}
+				}
+			} else {
+				int shift = RIGHT_REG(p);
+																comment(STR("Left/right shift %s by %s into %s", src, lreg[shift], dst));
+				if(generic(p->op) == LSH)
+																op1("CALL", ".asl16");
+				else if(optype(p->op) == I)
+																op1("CALL", ".asr16");
+				else
+																op1("CALL", ".lsr16");
+			}
+			break;
+		}
+		case MUL+I+sizeop(1):
+		case MUL+U+sizeop(1):
+		case DIV+I+sizeop(1):
+		case DIV+U+sizeop(1):
+		case MOD+I+sizeop(1):
+		case MOD+U+sizeop(1): {
+			int dreg = REG(p);
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			int sreg2 = RIGHT_REG(p);
+																comment(STR("Mul/div/mod %s by %s into %s", lreg[sreg1], lreg[sreg2], lreg[dreg]));
+			if(optype(p->op) == I) {
+				if(generic(p->op) == MUL)
+																op1("CALL", ".mul8");
+				else if(generic(p->op) == DIV)
+																op1("CALL", ".div8");
+				else
+																op1("CALL", ".mod8");
+			} else {
+				if(generic(p->op) == MUL)
+																op1("CALL", ".mulu8");
+				else if(generic(p->op) == DIV)
+																op1("CALL", ".divu8");
+				else
+																op1("CALL", ".modu8");
+			}
+			break;
+		}
+		case MUL+I+sizeop(2):
+		case MUL+U+sizeop(2):
+		case DIV+I+sizeop(2):
+		case DIV+U+sizeop(2):
+		case MOD+I+sizeop(2):
+		case MOD+U+sizeop(2): {
+			int dreg = REG(p);
+			char *dst = intreg[dreg]->x.name;
+			int sreg1 = LEFT_X_CHILD_REG(p);
+			char *src1 = intreg[sreg1]->x.name;
+			int sreg2 = RIGHT_REG(p);
+			char *src2 = intreg[sreg2]->x.name;
+			assert(opsize(p->x.kids[0]->op) == 2);
+			assert(opsize(p->x.kids[1]->op) == 2);
+																comment(STR("Mul/div/mod %s by %s into %s", src1, src2, dst));
+			if(optype(p->op) == I) {
+				if(generic(p->op) == MUL)
+																op1("CALL", ".mul16");
+				else if(generic(p->op) == DIV)
+																op1("CALL", ".div16");
+				else
+																op1("CALL", ".mod16");
+			} else {
+				if(generic(p->op) == MUL)
+																op1("CALL", ".mulu16");
+				else if(generic(p->op) == DIV)
+																op1("CALL", ".divu16");
+				else
+																op1("CALL", ".modu16");
+			}
+			break;
+		}
+		case RET+I+sizeop(1):
+		case RET+U+sizeop(1):
+		case RET+I+sizeop(2):
+		case RET+U+sizeop(2):
+		case RET+P+sizeop(2):
+		case RET+V: {
+			break;
+		}
+		case LABEL+V: {
+																label(STR("%s:", p->syms[0]->x.name));
+			break;
+		}
+		case JUMP+V: {
+				if(IS_LEFT_CONST(p) || IS_LEFT_ADDRGP(p)) {
+					char *val = LEFT_VAL(p);
+																op1("JP", val);
+			} else {
+				int sreg = LEFT_X_CHILD_REG(p);
+				char *src = intreg[sreg]->x.name;
+																op1("JP", STR("(%s)", src));
+			}
+			break;
+		}
+		default: {
+			fprintf(stderr, "ERROR: unimplemented instruction %s\n", opname(p->op));
+			break;
+		}
+	}
+}
+
+static void offsetsp(int off) {
+	while(off < -0x80) {
+																op2("LDA", "SP", "-128(SP)");
+		off += 0x80;
+	}
+	while(off > 0x7F) {
+																op2("LDA", "SP", "127(SP)");
+		off -= 0x7F;
+	}
+	if(off == 1) {
+																op1("INC", "SP");
+	} else if(off == -1) {
+																op1("DEC", "SP");
+	} else if(off != 0) {
+																op2("LDA", "SP", STR("%d(SP)", off));
+	}
+}
+
+static void offsethl(int off) {
+	if(off >= -0x80 && off <= 0x7F) {
+																op2("LDA", "HL", STR("%d(SP)", off));
+	} else {
+																op2("LDA", "HL", "0(SP)");
+																op1("PUSH", "BC");
+																op2("LD", "BC", STR("#%d", off));
+																op2("ADD", "HL", "BC");
+																op1("POP", "BC");
+	}
+}
+
+static void mv_8_8(int dreg, int sreg)
+{
+	if(dreg != sreg) {
+																op2("LD", lreg[dreg], lreg[sreg]);
+	}
+}
+
+static void mv_16_16(int dreg, int sreg)
+{
+	if(dreg != sreg) {
+																op2("LD", hreg[dreg], hreg[sreg]);
+																op2("LD", lreg[dreg], lreg[sreg]);
+	}
+}
+
+static void cvt_s8_16(int dreg, int sreg)
+{
+																op2("LD", "A", lreg[sreg]);
+	if(dreg != sreg) {
+																op2("LD", lreg[dreg], "A");
+	}
+																op0("RLCA");
+																op1("SBC", "A");
+																op2("LD", hreg[dreg], "A");
+}
+
+static void cvt_u8_16(int dreg, int sreg)
+{
+																op2("LD", hreg[dreg], "#0");
+	if(dreg != sreg) {
+																op2("LD", lreg[dreg], lreg[sreg]);
+	}
+}
+
+static void load_acc(long val, int byte, int checklast)
+{
+	static int last = 0;
+	if(byte == HIGH) {
+		if(!checklast || ((val>>8)&0xFF) != last) {
+			if(((val>>8)&0xFF) == 0) {
+																op1("XOR", "A");
+			} else {
+																op2("LD", "A", STR("#>%d", val));
+			}
+		}
+		last = (val>>8)&0xFF;
+	} else if(byte == LOW) {
+		if(!checklast || (val&0xFF) != last) {
+			if((val&0xFF) == 0) {
+																op1("XOR", "A");
+			} else {
+																op2("LD", "A", STR("#<%d", val));
+			}
+		}
+		last = val&0xFF;
+	}
+}
+
+long const_val(Node p)
+{
+	if(generic(p->op) == ADDRF || generic(p->op) == ADDRL) {
+		assert(p->syms[0] != NULL);
+		return p->syms[0]->x.offset;
+	}
+	if(generic(p->op) == CNST) {
+		assert(p->syms[0] != NULL);
+		if(optype(p->op) == I)
+			return p->syms[0]->u.c.v.i;
+		else if(optype(p->op) == U || optype(p->op) == P)
+			return p->syms[0]->u.c.v.u;
+	}
+	if(generic(p->op) == CALL) {
+		assert(p->syms[0] != NULL);
+		return p->syms[0]->u.c.v.i;
+	}
+	if(generic(p->op) == INDIR) {
+		assert(p->syms[RX]->u.t.cse->syms[0] != NULL);
+		if(optype(p->op) == I)
+			return p->syms[RX]->u.t.cse->syms[0]->u.c.v.i;
+		else if(optype(p->op) == U)
+			return p->syms[RX]->u.t.cse->syms[0]->u.c.v.u;
+	}
+	assert(0);
+	return 0;
+}
+
+#define isfp(p) (optype((p)->op)==F)
+
+static int ckstack(Node p, int n) {
+	int i;
+
+	for(i = 0; i < NELEMS(p->x.kids) && p->x.kids[i]; i++)
+		if(isfp(p->x.kids[i]))
+			n--;
+	if(isfp(p) && p->count > 0)
+		n++;
+	if(n > 8)
+		error("expression too complicated\n");
+	debug(fprint(stderr, "(ckstack(%x)=%d)\n", p, n));
+	assert(n >= 0);
+	return n;
+}
+
+static void doarg(Node p) {
+	assert(p && p->syms[0]);
+	mkactual(1, p->syms[0]->u.c.v.i);
+}
+
+static void blkfetch(int k, int off, int reg, int tmp) {}
+
+static void blkstore(int k, int off, int reg, int tmp) {}
+
+static void blkloop(int dreg, int doff, int sreg, int soff, int size, int tmps[]) {}
+
+static void local(Symbol p) {
+	if(isfloat(p->type))
+		p->sclass = AUTO;
+	if(askregvar(p, rmap(ttob(p->type))) == 0)
+		mkauto(p);
+}
+
+static void function(Symbol f, Symbol caller[], Symbol callee[], int n) {
+	int i;
+																label(STR("_start%s:", f->x.name));
+																label(STR("%s:", f->x.name));
+																op1("PUSH", "BC");
+	usedmask[0] = usedmask[1] = 0;
+	freemask[0] = freemask[1] = ~(unsigned)0;
+	offset = 2 + 2;
+	/* offset = return address + saved registers */
+	for(i = 0; callee[i]; i++) {
+		Symbol p = callee[i];
+		Symbol q = caller[i];
+		assert(q);
+		p->x.offset = q->x.offset = offset;
+		p->x.name = q->x.name = stringf("%d", p->x.offset);
+		p->sclass = q->sclass = AUTO;
+		offset += q->type->size;
+	}
+	assert(caller[i] == 0);
+	offset = maxoffset = 0;
+	gencode(caller, callee);
+	framesize = maxoffset;
+	if(framesize > 0)
+		offsetsp(-framesize);
+	emitcode();
+	if(framesize > 0)
+		offsetsp(framesize);
+																op1("POP", "BC");
+																op0("RET");
+																label(STR("_end%s:", f->x.name));
+	generate();
+}
+
+static void defsymbol(Symbol p) {
+	if(p->scope >= LOCAL && p->sclass == STATIC)
+		p->x.name = stringf("L%d", genlabel(1));
+	else if(p->generated)
+		p->x.name = stringf("L%s", p->name);
+	else if(p->scope == GLOBAL || p->sclass == EXTERN)
+		p->x.name = stringf("_%s", p->name);
+	else
+		p->x.name = p->name;
+}
+
+static void address(Symbol q, Symbol p, long n) {
+	if (p->scope == GLOBAL || p->sclass == STATIC || p->sclass == EXTERN)
+		q->x.name = stringf("%s%s%D", p->x.name, n >= 0 ? "+" : "", n);
+	else {
+		assert(n <= INT_MAX && n >= INT_MIN);
+		q->x.offset = p->x.offset + n;
+		q->x.name = stringd(q->x.offset);
+	}
+}
+
+static void defconst(int suffix, int size, Value v) {
+	if(suffix == I && size == 1)
+																op1(".db", STR("%d", v.i));
+	else if(suffix == I && size == 2)
+																op1(".dw", STR("%d", v.i));
+	else if(suffix == U && size == 1)
+																op1(".db", STR("0x%x", v.u));
+	else if(suffix == U && size == 2)
+																op1(".dw", STR("0x%x", v.u));
+	else if(suffix == P && size == 2)
+																op1(".dw", STR("0x%x", v.p));
+	else if(suffix == F && size == 2)
+		;
+	else assert(0);
+}
+
+static void defaddress(Symbol p) {
+																op1(".dw", p->x.name);
+}
+
+static void defstring(int n, char *str) {
+	char *s;
+	for(s = str; s < str + n; s++)
+																op1(".db", STR("%d", (*s)&0377));
+}
+
+static void export(Symbol p) {
+	if(!HARDWARE_REG(p->x.name))
+																op1(".globl", p->x.name);
+}
+
+static void import(Symbol p) {
+	if(p->ref > 0 && !HARDWARE_REG(p->x.name))
+																op1(".globl", p->x.name);
+}
+
+static void global(Symbol p) {
+																label(STR("%s:", p->x.name));
+	if(p->u.seg == BSS)
+																op1(".blkb", STR("%d", p->type->size));
+}
+
+static void space(int n) {
+	if(cseg != BSS)
+																op1(".blkb", STR("%d", n));
+}
+
+Interface z80IR = {
+	1, 1, 0,  /* char */
+	1, 1, 0,  /* short */
+	1, 1, 0,  /* int */
+	2, 1, 0,  /* long */
+	2, 1, 0,  /* long long */
+	2, 1, 1,  /* float */
+	2, 1, 1,  /* double */
+	2, 1, 1,  /* long double */
+	2, 1, 0,  /* T* */
+	0, 1, 0,  /* struct */
+	1,		  /* little_endian */
+	1,		  /* mulops_calls: mul/div/mod are library routines */
+	0,		  /* wants_callb */
+	1,		  /* wants_argb */
+	0,		  /* left_to_right */
+	0,		  /* wants_dag */
+	0,		  /* unsigned_char */
+	address,
+	blockbeg,
+	blockend,
+	defaddress,
+	defconst,
+	defstring,
+	defsymbol,
+	emit,
+	export,
+	function,
+	gen,
+	global,
+	import,
+	local,
+	progbeg,
+	progend,
+	segment,
+	space,
+	0, 0, 0, 0, 0, 0, 0,
+	{
+		2,		/* max_unaligned_load */
+		rmap,
+		blkfetch,
+		blkstore,
+		blkloop,
+		_label,
+		_rule,
+		_nts,
+		_kids,
+		_string,
+		_templates,
+		_isinstruction,
+		_ntname,
+		emit2,
+		doarg,
+		target,
+		clobber
+	}
+};

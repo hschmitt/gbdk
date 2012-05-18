@@ -1,0 +1,105 @@
+<!doctype linuxdoc system>
+
+<!-- Documentation for the font library calls and structures.
+ -->
+
+<article>
+
+<!-- Title information -->
+
+<title>font library
+<author>Michael Hope, <tt/michaelh@earthling.net/
+<date>v0.1, 28 June 1998
+<abstract>
+This document describes the font library for Pascal Felber's GBDK.  The font library
+provides support for using multiple fonts at one time on the GBs screen.  A font is not
+just limited to alphanumerics - it can mean a set of tiles used in a game.
+</abstract>
+<toc>
+<sect>Functions
+<sect1><label id="init_font">void init_font(void) - initalise the font system
+<p>
+Initalise the font system by clearing all font handles and releasing all tiles.
+Category:  System.
+
+<sect2>Description
+<p>
+Initalises the font system.  This routine should be called at the start of the program before any calls to <ref id="load_font">.
+<sect2>Parameters
+<p>
+None.
+<sect2>Returns
+<p>
+Nothing.
+<sect1><label id="load_font"><ref id="FONT_HANDLE"> load_font( void *<ref id="font_structure"> )
+<p>
+Attempt to load the font <em/font/, returning a <ref id="FONT_HANDLE"> on success or NULL on failure.
+<sect2>Description
+<p>
+load_font should be called once for each font that is required.  Note that currently there is no unload_font support.
+<sect2>Parameters
+<p>
+<em/font/: pointer to the base of a valid font structure
+<sect2>Returns
+<p>
+On success, returns a <ref id="FONT_HANDLE">.  On failure, returns NULL (0)
+<sect1><label id="set_font">void set_font( <ref id="FONT_HANDLE"> font_handle )
+<p>
+Set the current font to the previousally loaded font <em/font_handle/
+<sect2>Description
+<p>
+set_font changes current output font to the one specified by <em/font_handle/
+<sect2>Parameters
+<p>
+<em/font_handle/: handle from a previous <ref id="load_font"> call.
+<sect2>Returns
+<p>
+Nothing.
+<sect2>Bugs
+<p>
+No check is made to see if <em/font_handle/ is a valid font handle.
+<sect1><label id="mprint_string">void mprint_string( char *string )
+<p>
+Print string <em/string/ using the current font.
+<sect2>Description
+<p>
+This is a tempory routine used to test the font library.
+<sect2>Parameters
+<p>
+<em/string/: null terminated string to print.
+<sect2>Returns
+<p>
+Nothing.
+<sect>Data??
+<sect1><label id="FONT_HANDLE">FONT_HANDLE:  UWORD
+<sect2>Description
+<p>
+A <em/FONT_HANDLE/ is a 16 bit value returned from <ref id="load_font"> and used by <ref id="set_font">.  Physically it is a pointer to an entry in the font_table.
+<sect1><label id="font_structure">font_structure
+<sect2>Description
+<p>
+A font_structure is a container for the data related to a font, including the <ref id="font_structure_encoding" name="encoding"> data and <ref id="font_structure_tile_data" name="tile"> (bitmap) image data.
+Due to the variable length nature of the encoding table and the tile data no default C structure exists.
+<sect2>Format
+<p>
+A font structure is made up of four fields - the font type, the number of tiles used, the encoding table and the tile data.
+<sect3><label id="font_structure_type">type:  UBYTE
+<p>
+The <em/Font type/ is a single bit that describes the encoding table and the format of
+the tile data.  The encoding table length is specified by the lower two bits
+00:  256 byte encoding table
+01:  128 byte encoding table
+10 and 11 are reserved.
+The third bit (0x04) is used to determine if the tile data is compressed.  Many tiles do not use shades of grey, and so can be represented in 8 bytes instead of 16.  If bit 2 is set, then the tiles are assumed to be 8 bytes long and are expanded to 16 bytes at the load stage.
+<sect3><label id="font_structure_num_tiles">num_tiles:  UBYTE
+<p>
+<em/num_tiles/ gives the number of tiles present in the tile data and hence the number of tiles required by the font.
+<sect3><label id="font_structure_encoding">encoding:  array of UBYTE
+<p>
+The encoding table is an array that maps an ASCII character to the appropriate tile in the tile data.  For example, suppose that the letter 'A' was the tenth tile.  Then the 65th (the ASCII code for 'A') entry in the encoding table would be 10.
+Any ASCII characters that don't have a corresponding tile should be mapped to a default tile.  Space is recomended tile.
+<sect3><label id="font_structure_tile_data">tile_data:  array of UBYTE
+<p>
+The final field is the actual tile data.  Note that tile numbering starts from zero.
+</article>
+

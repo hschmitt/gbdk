@@ -1,0 +1,9 @@
+MLH
+	Fixed memset() for when the length is zero
+	Optimised memset() - now 75% faster (see examples/tests/test-memset.c)
+	Did the same thing to memcpy()
+	Re-wrote the malloc() routines
+	Added support for native (ie assembly) malloc() replacements
+
+	Few changes to .mul16, .asl16 etc (Sam Nova)
+	
